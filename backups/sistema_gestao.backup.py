@@ -43,9 +43,16 @@ TABELAS_SISTEMA = (
     "caixa", "contas_a_pagar", "contas_a_receber",
 )
 
+# Hook preenchido em criar_interface() para atualizar a lista de backups da tela
 _hook_atualizar_lista_backups = None
 
 def _copiar_banco_sqlite(origem, destino):
+    """Copia um banco SQLite de `origem` para `destino`.
+
+    Usa a API de backup do próprio SQLite (cópia consistente, página a página,
+    funciona mesmo com conexões abertas e substitui TODO o conteúdo do destino).
+    Se a API não estiver disponível/falhar, usa cópia simples de arquivo.
+    """
     try:
         src = sqlite3.connect(origem, timeout=10)
         try:
@@ -65,6 +72,8 @@ def _copiar_banco_sqlite(origem, destino):
     return True
 
 def validar_arquivo_backup(caminho):
+    """Verifica se o arquivo é um banco SQLite íntegro e do sistema.
+    Retorna (ok, mensagem_de_erro)."""
     try:
         if not caminho or not os.path.isfile(caminho):
             return False, "Arquivo não encontrado."
@@ -92,6 +101,8 @@ def validar_arquivo_backup(caminho):
         return False, str(e)
 
 def fazer_backup(destino=None, silencioso=False):
+    """Copia sistema.db para pasta backups/ (ou caminho informado).
+    Retorna caminho do arquivo gerado ou None em erro."""
     garantir_pasta_backup()
     if not os.path.exists(DB_PATH):
         if not silencioso:
@@ -100,11 +111,13 @@ def fazer_backup(destino=None, silencioso=False):
     try:
         if destino is None:
             destino = os.path.join(BACKUP_DIR, gerar_nome_backup())
+            # Evita sobrescrever um backup gerado no mesmo segundo
             base, ext = os.path.splitext(destino)
             n = 1
             while os.path.exists(destino):
                 destino = f"{base}_{n}{ext}"
                 n += 1
+        # Garante que conexões pendentes gravem (sqlite)
         try:
             conn = conectar()
             conn.execute("PRAGMA wal_checkpoint(FULL)")
@@ -112,13 +125,17 @@ def fazer_backup(destino=None, silencioso=False):
         except Exception:
             pass
         _copiar_banco_sqlite(DB_PATH, destino)
+        # Atualiza a lista da tela de backup (se a interface estiver aberta)
         try:
             if callable(_hook_atualizar_lista_backups):
                 _hook_atualizar_lista_backups()
         except Exception:
             pass
         if not silencioso:
-            mostrar_sucesso(f"Backup realizado com sucesso!\n\nArquivo:\n{destino}", "Backup")
+            mostrar_sucesso(
+                f"Backup realizado com sucesso!\n\nArquivo:\n{destino}",
+                "Backup",
+            )
         return destino
     except Exception as e:
         if not silencioso:
@@ -145,10 +162,14 @@ def listar_backups_locais():
             itens.append((nome, mtime, tamanho, caminho, mtime_num))
     except Exception:
         pass
+    # Mais recentes primeiro (ordena pela data real, não pelo texto)
     itens.sort(key=lambda x: x[4], reverse=True)
     return [(n, m, t, c) for n, m, t, c, _ in itens]
 
 def recarregar_dados_sistema(limpar_formularios=False):
+    """Recarrega TODAS as listas, combos, cards e o dashboard a partir do banco.
+    Usado após restaurar um backup e pelo botão 'Atualizar dados'.
+    Retorna True se tudo foi recarregado sem erro."""
     if root is None:
         return False
     erros = []
@@ -179,6 +200,9 @@ def recarregar_dados_sistema(limpar_formularios=False):
     return not erros
 
 def restaurar_backup(caminho_origem):
+    """Restaura o banco a partir de um arquivo .db de backup.
+    Cria um backup de segurança do banco atual antes e, ao final,
+    recarrega todas as telas do sistema com os dados restaurados."""
     if not caminho_origem or not os.path.isfile(caminho_origem):
         mostrar_aviso("Selecione um arquivo de backup válido (.db).")
         return False
@@ -201,6 +225,7 @@ def restaurar_backup(caminho_origem):
         return False
     seguranca = None
     try:
+        # Backup de segurança do estado atual
         garantir_pasta_backup()
         seguranca = os.path.join(
             BACKUP_DIR,
@@ -217,8 +242,10 @@ def restaurar_backup(caminho_origem):
         else:
             seguranca = None
 
+        # Substitui o banco atual pelo conteúdo do backup
         _copiar_banco_sqlite(caminho_origem, DB_PATH)
 
+        # limpa possíveis arquivos WAL/SHM antigos
         for ext in ("-wal", "-shm"):
             extra = DB_PATH + ext
             if os.path.exists(extra):
@@ -230,6 +257,8 @@ def restaurar_backup(caminho_origem):
         mostrar_erro(f"Falha ao restaurar backup:\n{e}")
         return False
 
+    # Aplica migrações (caso o backup seja de uma versão anterior) e
+    # recarrega TODAS as telas com os dados restaurados.
     try:
         init_db()
     except Exception as e:
@@ -248,6 +277,13 @@ def restaurar_backup(caminho_origem):
     return True
 
 def perguntar_backup_ao_sair(titulo="Sair"):
+    """Pergunta se deseja backup e onde salvar.
+    Retorna:
+      'cancel' -> não sair
+      'sem_backup' -> sair sem backup
+      caminho(str) -> backup feito e caminho
+      True -> backup ok (silencioso path)
+    """
     global root
     result = {"acao": "cancel"}
 
@@ -315,22 +351,25 @@ def perguntar_backup_ao_sair(titulo="Sair"):
         else:
             mostrar_erro("Não foi possível salvar o backup no local escolhido.")
 
-    criar_botao_arredondado(
-        body, "Sim — Escolher onde salvar", backup_escolher_local,
-        bg=CORES["primary"], fg="white", width=400, height=36, radius=15,
-        font=("Arial", 10, "bold")
+    tk.Button(
+        body, text="Sim — Escolher onde salvar",
+        command=backup_escolher_local,
+        bg=CORES["primary"], fg="white", font=("Arial", 10, "bold"),
+        bd=0, padx=12, pady=8, cursor="hand2",
     ).pack(fill="x", pady=4)
 
-    criar_botao_arredondado(
-        body, "Não — Sair sem backup", lambda: fechar("sem_backup"),
-        bg="#64748b", fg="white", width=400, height=36, radius=15,
-        font=("Arial", 10, "bold")
+    tk.Button(
+        body, text="Não — Sair sem backup",
+        command=lambda: fechar("sem_backup"),
+        bg="#64748b", fg="white", font=("Arial", 10, "bold"),
+        bd=0, padx=12, pady=8, cursor="hand2",
     ).pack(fill="x", pady=4)
 
-    criar_botao_arredondado(
-        body, "Cancelar", lambda: fechar("cancel"),
-        bg="white", fg=CORES["text_gray"], width=400, height=36, radius=15,
-        font=("Arial", 9)
+    tk.Button(
+        body, text="Cancelar",
+        command=lambda: fechar("cancel"),
+        bg="white", fg=CORES["text_gray"], font=("Arial", 9),
+        bd=1, relief="solid", padx=12, pady=6, cursor="hand2",
     ).pack(fill="x", pady=(10, 0))
 
     modal.bind("<Escape>", lambda e: fechar("cancel"))
@@ -338,57 +377,7 @@ def perguntar_backup_ao_sair(titulo="Sair"):
     modal.wait_window()
     return result
 
-# ============================================================
-# FUNÇÃO PARA CRIAR BOTÃO ARREDONDADO (CORRIGIDA)
-# ============================================================
-def criar_botao_arredondado(parent, texto, comando=None, bg="#3b82f6", fg="white",
-                            width=140, height=40, radius=15, font=("Arial", 10, "bold")):
-    """Cria um botão com cantos arredondados usando Canvas."""
-    try:
-        parent_bg = parent.cget("bg")
-    except Exception:
-        parent_bg = "#f1f5f9"
-    
-    canvas = tk.Canvas(parent, width=width, height=height, bg=parent_bg,
-                       highlightthickness=0, cursor="hand2")
-    
-    def _round_rect(x1, y1, x2, y2, r, **kwargs):
-        points = [
-            x1+r, y1, x2-r, y1, x2, y1, x2, y1+r,
-            x2, y2-r, x2, y2, x2-r, y2, x1+r, y2,
-            x1, y2, x1, y2-r, x1, y1+r, x1, y1
-        ]
-        return canvas.create_polygon(points, smooth=True, **kwargs)
-    
-    rect = _round_rect(2, 2, width-2, height-2, radius, fill=bg, outline=bg)
-    canvas.create_text(width//2, height//2, text=texto, fill=fg, font=font, justify="center")
-    
-    def on_click(e):
-        if comando:
-            try:
-                comando()
-            except Exception as exc:
-                import traceback
-                traceback.print_exc()
-                mostrar_erro(str(exc))
-    
-    def on_enter(e):
-        hover_cores = {
-            "#3b82f6": "#2563eb", "#10b981": "#059669", "#ef4444": "#dc2626",
-            "#f59e0b": "#d97706", "#8b5cf6": "#7c3aed", "#6366f1": "#4f46e5",
-            "#64748b": "#475569", "#22c55e": "#16a34a", "#f97316": "#ea580c",
-            "#ec4899": "#db2777", "#06b6d4": "#0891b2", "#1d4ed8": "#1e3a8a",
-            "#e85d3a": "#d97706", "#1e293b": "#334155"
-        }
-        canvas.itemconfig(rect, fill=hover_cores.get(bg, "#555555"))
-    
-    def on_leave(e):
-        canvas.itemconfig(rect, fill=bg)
-    
-    canvas.bind("<Button-1>", on_click)
-    canvas.bind("<Enter>", on_enter)
-    canvas.bind("<Leave>", on_leave)
-    return canvas
+
 
 
 CORES = {
@@ -431,7 +420,9 @@ listas_combos = {"clientes": [], "fornecedores": [], "produtos": []}
 root = None
 frame_abas = None
 
+# DATA BR
 def iso_para_br_data(data_str):
+    """Converte ISO/data para dd/mm/aaaa (sem hora)."""
     if not data_str:
         return ""
     try:
@@ -446,6 +437,7 @@ def iso_para_br_data(data_str):
         return str(data_str).split(" ")[0]
 
 def iso_para_br(data_str):
+
     if not data_str:
         return ""
     try:
@@ -518,9 +510,11 @@ def hoje_br():
 def hoje_br_completo():
     return datetime.now().strftime("%d/%m/%Y %H:%M")
 
+
 import calendar as _cal_mod
 
 def abrir_calendario(entry, parent=None):
+    """Modal de calendário: escolha dia, mês e ano (dd/mm/aaaa)."""
     global root
     parent = parent or root
     top = tk.Toplevel(parent if parent is not None else root)
@@ -598,10 +592,10 @@ def abrir_calendario(entry, parent=None):
 
                 hoje = date.today()
                 is_hoje = (d == hoje.day and estado["mes"] == hoje.month and estado["ano"] == hoje.year)
-                btn = criar_botao_arredondado(
-                    corpo, str(d), _escolhe,
-                    bg="#bfdbfe" if is_hoje else "white", fg="#1e293b",
-                    width=32, height=28, radius=15, font=("Arial", 9)
+                btn = tk.Button(
+                    corpo, text=str(d), width=4, bd=0, font=("Arial", 9),
+                    bg="#bfdbfe" if is_hoje else "white",
+                    command=_escolhe, cursor="hand2",
                 )
                 btn.grid(row=row, column=col, padx=1, pady=1)
                 cells.append(btn)
@@ -621,8 +615,8 @@ def abrir_calendario(entry, parent=None):
             estado["ano"] += 1
         _desenhar()
 
-    criar_botao_arredondado(header, "◀", _ant, bg=CORES["primary"], fg="white", width=40, height=30, radius=15, font=("Arial", 12)).pack(side="left", padx=4)
-    criar_botao_arredondado(header, "▶", _prox, bg=CORES["primary"], fg="white", width=40, height=30, radius=15, font=("Arial", 12)).pack(side="right", padx=4)
+    tk.Button(header, text="◀", command=_ant, bg=CORES["primary"], fg="white", bd=0, padx=10, cursor="hand2").pack(side="left", padx=4)
+    tk.Button(header, text="▶", command=_prox, bg=CORES["primary"], fg="white", bd=0, padx=10, cursor="hand2").pack(side="right", padx=4)
     _desenhar()
 
     try:
@@ -634,7 +628,9 @@ def abrir_calendario(entry, parent=None):
         pass
     top.bind("<Escape>", lambda e: (top.grab_release(), top.destroy()))
 
+
 def ativar_seletor_data(entry):
+    """Ao clicar ou focar no campo de data, abre o modal de calendário."""
     if getattr(entry, "_cal_bound", False):
         return entry
 
@@ -653,6 +649,7 @@ def ativar_seletor_data(entry):
     entry._cal_bound = True
     return entry
 
+
 def formatar_moeda(valor):
     try:
         return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -660,6 +657,7 @@ def formatar_moeda(valor):
         return "R$ 0,00"
 
 def formatar_status(status):
+    """Exibe status com inicial maiúscula (Em aberto, Recebido, Cancelado, etc.)."""
     if not status:
         return ""
     mapa = {
@@ -677,9 +675,11 @@ def formatar_status(status):
     s = str(status).strip().lower()
     if s in mapa:
         return mapa[s]
+    # fallback: capitaliza cada palavra
     return " ".join(p.capitalize() if p else p for p in str(status).replace("_", " ").split())
 
 def formatar_telefone(event=None, entry=None):
+    """Formata telefone no padrão (11) 9-0000-0000"""
     if entry is None and event is not None:
         entry = event.widget
     if entry is None:
@@ -699,16 +699,19 @@ def formatar_telefone(event=None, entry=None):
         formatado = f"({digitos[:2]}) {digitos[2:3]}-{digitos[3:]}"
     else:
         formatado = f"({digitos[:2]}) {digitos[2:3]}-{digitos[3:7]}-{digitos[7:]}"
+    # Evita loop infinito de KeyRelease
     if entry.get() != formatado:
         cursor = entry.index(tk.INSERT)
         entry.delete(0, tk.END)
         entry.insert(0, formatado)
+        # tenta manter cursor no final
         try:
             entry.icursor(len(formatado))
         except:
             pass
 
 def formatar_cep(event=None, entry=None):
+    """Formata CEP 00000-000"""
     if entry is None and event is not None:
         entry = event.widget
     if entry is None:
@@ -727,12 +730,14 @@ def formatar_cep(event=None, entry=None):
             pass
 
 def formatar_cpf_cnpj(event=None, entry=None):
+    """Formata automaticamente CPF (000.000.000-00) ou CNPJ (00.000.000/0000-00)"""
     if entry is None and event is not None:
         entry = event.widget
     if entry is None:
         return
     digitos = re.sub(r"\D", "", entry.get())[:14]
     if len(digitos) <= 11:
+        # CPF: 000.000.000-00
         if len(digitos) <= 3:
             formatado = digitos
         elif len(digitos) <= 6:
@@ -742,6 +747,7 @@ def formatar_cpf_cnpj(event=None, entry=None):
         else:
             formatado = f"{digitos[:3]}.{digitos[3:6]}.{digitos[6:9]}-{digitos[9:]}"
     else:
+        # CNPJ: 00.000.000/0000-00
         if len(digitos) <= 2:
             formatado = digitos
         elif len(digitos) <= 5:
@@ -761,6 +767,7 @@ def formatar_cpf_cnpj(event=None, entry=None):
             pass
 
 def buscar_cep_viacep(cep):
+    """Consulta ViaCEP e retorna dict com logradouro, bairro, localidade, uf ou None"""
     cep_limpo = re.sub(r"\D", "", str(cep or ""))
     if len(cep_limpo) != 8:
         return None
@@ -775,6 +782,7 @@ def buscar_cep_viacep(cep):
     except Exception:
         return None
 
+# BANCO
 def conectar():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
@@ -784,6 +792,7 @@ def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
 
 def migrar_tabela_check(nome_tabela, create_sql_novo):
+    """Migra tabela antiga com CHECK restritivo para nova sem CHECK"""
     conn = conectar()
     cur = conn.cursor()
     try:
@@ -791,10 +800,14 @@ def migrar_tabela_check(nome_tabela, create_sql_novo):
         row = cur.fetchone()
         if row and row[0]:
             sql_old = row[0].lower()
+            # Detecta CHECK antigo com pendente
             if "check" in sql_old and ("pendente" in sql_old or "concluida" in sql_old):
                 print(f"🔧 Migrando tabela {nome_tabela} - removendo CHECK antigo...")
+                # Renomeia antiga
                 cur.execute(f"ALTER TABLE {nome_tabela} RENAME TO {nome_tabela}_old")
+                # Cria nova
                 cur.execute(create_sql_novo)
+                # Copia colunas comuns
                 cur.execute(f"PRAGMA table_info({nome_tabela}_old)")
                 cols_old = [r[1] for r in cur.fetchall()]
                 cur.execute(f"PRAGMA table_info({nome_tabela})")
@@ -821,6 +834,7 @@ def init_db():
     conn = conectar()
     cur = conn.cursor()
     
+    # Cria tabelas novas já sem CHECK restritivo (ou com CHECK novo)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS usuarios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -990,6 +1004,8 @@ def init_db():
     conn.commit()
     conn.close()
     
+    # Migração de tabelas antigas com CHECK restritivo
+    # SQL novo sem CHECK
     sql_cp_novo = """
     CREATE TABLE contas_a_pagar (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1066,6 +1082,7 @@ def init_db():
     migrar_tabela_check("vendas", sql_vendas_novo)
     migrar_tabela_check("caixa", sql_caixa_novo)
     
+    # Migração colunas adicionais
     conn = conectar()
     cur = conn.cursor()
     tabelas_colunas = {
@@ -1089,6 +1106,7 @@ def init_db():
                     pass
     conn.commit()
     
+    # Migração de status antigos
     try:
         cur.execute("UPDATE vendas SET status='em_aberto' WHERE status='concluida' AND excluido=0")
         cur.execute("UPDATE vendas SET status='em_aberto' WHERE status='pendente' AND excluido=0")
@@ -1116,6 +1134,7 @@ def init_db():
         cur.execute("INSERT INTO usuarios (nome, login, senha, perfil, email) VALUES (?,?,?,?,?)",
                     ("Operador", "operador", hash_senha("operador123"), "operador", "operador@sistema.local"))
     else:
+        # Garante email nos usuários padrão existentes
         try:
             cur.execute("UPDATE usuarios SET email='admin@sistema.local' WHERE login='admin' AND (email IS NULL OR email='')")
             cur.execute("UPDATE usuarios SET email='operador@sistema.local' WHERE login='operador' AND (email IS NULL OR email='')")
@@ -1125,15 +1144,17 @@ def init_db():
     conn.commit()
     conn.close()
 
+# PERMISSÕES
 def eh_admin():
     return usuario_logado and usuario_logado.get('perfil') == 'admin'
 
 def verificar_permissao_exclusao():
     if not eh_admin():
-        mostrar_aviso("Somente usuário ADM pode excluir!\n\nSeu perfil: " + (usuario_logado.get('perfil') if usuario_logado else 'desconhecido'))
+        mostrar_aviso("🔒 Somente usuário ADM pode excluir!\n\nSeu perfil: " + (usuario_logado.get('perfil') if usuario_logado else 'desconhecido'))
         return False
     return True
 
+# MODAL MODERNO SEM SOM
 def mostrar_modal_moderno(titulo, mensagem, tipo="sucesso", duracao_ms=None):
     global root
     if root is None:
@@ -1173,17 +1194,18 @@ def mostrar_modal_moderno(titulo, mensagem, tipo="sucesso", duracao_ms=None):
             pass
         modal.destroy()
     
-    criar_botao_arredondado(
-        body, "OK", fechar,
-        bg=cores.get(tipo, CORES["success"]), fg="white",
-        width=120, height=36, radius=15, font=("Arial", 11, "bold")
-    ).pack(pady=12)
+    btn = tk.Button(body, text="OK", command=fechar, bg=cores.get(tipo, CORES["success"]), fg="white", font=('Arial', 11, 'bold'), bd=0, padx=30, pady=8, cursor='hand2')
+    btn.pack(pady=12)
+    btn.focus()
+    modal.bind('<Return>', lambda e: fechar())
+    modal.bind('<Escape>', lambda e: fechar())
     
     if duracao_ms is None and tipo == "sucesso":
         duracao_ms = 2500
     if duracao_ms:
         modal.after(duracao_ms, fechar)
 
+    # Ajusta a altura ao conteúdo (mensagens longas não escondem o botão OK)
     try:
         modal.update_idletasks()
         h_req = int(modal.winfo_reqheight())
@@ -1253,22 +1275,13 @@ def confirmar_moderno(titulo, mensagem):
     
     frame_btn = tk.Frame(body, bg="white")
     frame_btn.pack(pady=15)
-    
-    criar_botao_arredondado(
-        frame_btn, "❌ Não", nao,
-        bg="#64748b", fg="white", width=100, height=36, radius=15,
-        font=("Arial", 10, "bold")
-    ).pack(side='left', padx=10)
-    
-    criar_botao_arredondado(
-        frame_btn, "✅ Sim", sim,
-        bg=CORES["success"], fg="white", width=100, height=36, radius=15,
-        font=("Arial", 10, "bold")
-    ).pack(side='left', padx=10)
+    tk.Button(frame_btn, text="❌ Não", command=nao, bg="#64748b", fg="white", font=('Arial', 10, 'bold'), bd=0, padx=20, pady=8, cursor='hand2').pack(side='left', padx=10)
+    tk.Button(frame_btn, text="✅ Sim", command=sim, bg=CORES["success"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=20, pady=8, cursor='hand2').pack(side='left', padx=10)
     
     modal.bind('<Escape>', lambda e: nao())
     modal.bind('<Return>', lambda e: sim())
 
+    # Ajusta a altura ao conteúdo (mensagens longas não escondem os botões)
     try:
         modal.update_idletasks()
         h_req = int(modal.winfo_reqheight())
@@ -1280,7 +1293,9 @@ def confirmar_moderno(titulo, mensagem):
     modal.wait_window()
     return result["value"]
 
+
 def confirmar_contas_lote(titulo, contas, total, acao_label="Confirmar"):
+    """Modal com lista rolável, total e botões sempre visíveis (Receber/Pagar)."""
     global root
     result = {"value": False}
 
@@ -1302,11 +1317,13 @@ def confirmar_contas_lote(titulo, contas, total, acao_label="Confirmar"):
     is_receber = ("Receber" in titulo) or ("receb" in titulo.lower())
     cor_header = CORES["primary"] if is_receber else CORES["danger"]
 
+    # Header
     header = tk.Frame(modal, bg=cor_header, height=56)
     header.pack(fill='x')
     header.pack_propagate(False)
     tk.Label(header, text=titulo, bg=cor_header, fg="white", font=('Arial', 13, 'bold')).pack(pady=14)
 
+    # Botões PRIMEIRO no rodapé (sempre visíveis)
     frame_btn = tk.Frame(modal, bg="#f1f5f9", height=64)
     frame_btn.pack(fill='x', side='bottom')
     frame_btn.pack_propagate(False)
@@ -1322,23 +1339,25 @@ def confirmar_contas_lote(titulo, contas, total, acao_label="Confirmar"):
         except Exception:
             pass
 
-    criar_botao_arredondado(
-        frame_btn, "❌ Cancelar", lambda: fechar(False),
-        bg="#64748b", fg="white", width=130, height=36, radius=15,
-        font=("Arial", 10, "bold")
+    tk.Button(
+        frame_btn, text="❌ Cancelar", command=lambda: fechar(False),
+        bg="#64748b", fg="white", font=('Arial', 10, 'bold'),
+        bd=0, padx=18, pady=10, cursor='hand2',
     ).pack(side='left', padx=16, pady=12)
 
-    criar_botao_arredondado(
-        frame_btn, f"✅ {acao_label}", lambda: fechar(True),
-        bg=CORES["success"], fg="white", width=150, height=36, radius=15,
-        font=("Arial", 12, "bold")
+    tk.Button(
+        frame_btn, text=f"✅ {acao_label}", command=lambda: fechar(True),
+        bg=CORES["success"], fg="white", font=('Arial', 12, 'bold'),
+        bd=0, padx=24, pady=10, cursor='hand2',
     ).pack(side='right', padx=16, pady=12)
 
+    # Total acima dos botões
     frame_total = tk.Frame(modal, bg="#fef3c7")
     frame_total.pack(fill='x', side='bottom')
     tk.Label(frame_total, text="TOTAL", bg="#fef3c7", font=('Arial', 11, 'bold'), fg="#92400e").pack(side='left', padx=16, pady=10)
     tk.Label(frame_total, text=formatar_moeda(total), bg="#fef3c7", font=('Arial', 15, 'bold'), fg=CORES["danger"]).pack(side='right', padx=16, pady=10)
 
+    # Corpo com lista
     body = tk.Frame(modal, bg="white")
     body.pack(fill='both', expand=True, padx=14, pady=10)
 
@@ -1404,6 +1423,8 @@ def confirmar_contas_lote(titulo, contas, total, acao_label="Confirmar"):
     modal.wait_window()
     return result["value"]
 
+
+# VALIDAÇÃO
 def validar_obrigatorio(valor, nome_campo):
     if not valor or not str(valor).strip():
         mostrar_aviso(f"Campo obrigatório não preenchido:\n\n📌 {nome_campo}\n\nPreencha antes de salvar!", "Campo Obrigatório")
@@ -1421,7 +1442,10 @@ def validar_numero(valor, nome_campo, permitir_zero=False):
         mostrar_aviso(f"{nome_campo} inválido! Digite um número.", "Valor Inválido")
         return False
 
+# AUTOCOMPLETE
 def configurar_autocomplete_combo(combo, lista_completa_ref, min_chars=3):
+    """Autocomplete em Combobox: a partir de min_chars caracteres mostra opções filtradas."""
+    # Evita empilhar binds em rechamadas de atualizar_combos
     for seq in ('<KeyRelease>', '<FocusIn>', '<Button-1>'):
         try:
             combo.unbind(seq)
@@ -1429,6 +1453,7 @@ def configurar_autocomplete_combo(combo, lista_completa_ref, min_chars=3):
             pass
 
     def _lista():
+        # lista_completa_ref pode ser lista mutável compartilhada
         return list(lista_completa_ref) if not callable(lista_completa_ref) else list(lista_completa_ref())
 
     def on_keyrelease(event):
@@ -1455,6 +1480,7 @@ def configurar_autocomplete_combo(combo, lista_completa_ref, min_chars=3):
     combo.bind('<FocusIn>', on_focus_in)
     combo.bind('<Button-1>', on_focus_in)
 
+# Popup de sugestões para campos Entry de busca (após 3 caracteres)
 _sugestao_popup = {"win": None}
 
 def fechar_sugestao_popup():
@@ -1466,6 +1492,11 @@ def fechar_sugestao_popup():
     _sugestao_popup["win"] = None
 
 def configurar_busca_com_opcoes(entry, get_opcoes_fn, on_escolher=None, min_chars=3, max_itens=12):
+    """
+    No Entry de busca: ao digitar min_chars caracteres, abre lista de opções.
+    get_opcoes_fn(texto) -> lista de strings
+    on_escolher(texto_escolhido) -> callback opcional (ex.: filtrar grid)
+    """
     for seq in ('<KeyRelease>', '<FocusOut>', '<Escape>'):
         try:
             entry.unbind(seq)
@@ -1491,6 +1522,7 @@ def configurar_busca_com_opcoes(entry, get_opcoes_fn, on_escolher=None, min_char
                 on_escolher(texto)
             return
 
+        # Janela flutuante logo abaixo do entry
         root_win = entry.winfo_toplevel()
         popup = tk.Toplevel(root_win)
         popup.overrideredirect(True)
@@ -1554,25 +1586,34 @@ def configurar_busca_com_opcoes(entry, get_opcoes_fn, on_escolher=None, min_char
         entry.bind('<Escape>', lambda e: fechar_sugestao_popup(), add='+')
         popup.bind('<Escape>', lambda e: fechar_sugestao_popup())
 
+        # Filtra grid em paralelo enquanto digita
         if on_escolher:
             on_escolher(texto)
 
     def ao_sair(event=None):
+        # Pequeno atraso para permitir clique na lista
         entry.after(180, fechar_sugestao_popup)
 
     entry.bind('<KeyRelease>', mostrar_opcoes)
     entry.bind('<FocusOut>', ao_sair)
 
+# HELPERS
 def limpar_tree(tree):
     for item in tree.get_children():
         tree.delete(item)
 
-_selecoes_multiplas = {}
+# ============================================================
+# SELEÇÃO MÚLTIPLA (checkbox) — reutilizável em qualquer lista
+# ============================================================
+_selecoes_multiplas = {}  # id(tree) -> set de iids marcados
 
 def _sel_key(tree):
     return id(tree)
 
 def habilitar_selecao_multipla(tree):
+    """Torna a ÚLTIMA coluna da tree um checkbox clicável (☐ / ☑) para seleção múltipla.
+    Usar a última coluna (e não a primeira) evita quebrar qualquer código existente
+    que leia valores[0] como o ID do registro."""
     _selecoes_multiplas[_sel_key(tree)] = set()
     try:
         tree.tag_configure("marcado", background="#dbeafe")
@@ -1588,7 +1629,7 @@ def habilitar_selecao_multipla(tree):
         if not linha:
             return
         n_colunas = len(tree["columns"])
-        if col != f"#{n_colunas}":
+        if col != f"#{n_colunas}":  # apenas a última coluna é o checkbox
             return
         marcados = _selecoes_multiplas.setdefault(_sel_key(tree), set())
         valores = list(tree.item(linha, "values"))
@@ -1610,6 +1651,7 @@ def limpar_selecao_multipla(tree):
     _selecoes_multiplas[_sel_key(tree)] = set()
 
 def obter_ids_selecionados(tree):
+    """IDs (1ª coluna, inalterada) das linhas marcadas na tree."""
     marcados = _selecoes_multiplas.get(_sel_key(tree), set())
     ids = []
     for iid in marcados:
@@ -1622,6 +1664,7 @@ def obter_ids_selecionados(tree):
     return ids
 
 def criar_barra_selecao_multipla(parent, tree, on_excluir_ids=None, texto_botao="Excluir selecionados", mostrar_excluir=True):
+    """Barra com 'Marcar todos'. Botão excluir opcional (em CP/CR já existe botão abaixo)."""
     barra = tk.Frame(parent, bg=CORES["bg_light"])
     var_todos = tk.BooleanVar(value=False)
 
@@ -1657,14 +1700,14 @@ def criar_barra_selecao_multipla(parent, tree, on_excluir_ids=None, texto_botao=
             var_todos.set(False)
             limpar_selecao_multipla(tree)
 
-        criar_botao_arredondado(
-            barra, texto_botao, _excluir,
-            bg=CORES["danger"], fg="white", width=140, height=28, radius=15,
-            font=("Arial", 9, "bold")
-        ).pack(side='left')
+        tk.Button(barra, text=texto_botao, command=_excluir, bg=CORES["danger"], fg="white",
+                  bd=0, padx=10, pady=4, font=('Arial', 9, 'bold'), cursor='hand2').pack(side='left')
     return barra
 
+
+
 def _configurar_tree_com_checkbox(tree, colunas, larguras=None):
+    """Configura Treeview com coluna Sel (checkbox) sempre visível à direita."""
     for c in colunas:
         tree.heading(c, text=c)
     if larguras is None:
@@ -1678,7 +1721,9 @@ def _configurar_tree_com_checkbox(tree, colunas, larguras=None):
             tree.column(c, width=w, minwidth=40, anchor='w' if c not in ("ID", "Valor", "Venc BR", "Data Venda", "Status", "Parcela") else 'center', stretch=True)
     habilitar_selecao_multipla(tree)
 
+
 def criar_barra_lixeira(parent, tree, tabela):
+    """Barra com marcar todos + restaurar em massa + excluir definitivo em massa (Lixeira)."""
     barra = tk.Frame(parent, bg=CORES["bg_light"])
     var_todos = tk.BooleanVar(value=False)
 
@@ -1708,28 +1753,27 @@ def criar_barra_lixeira(parent, tree, tabela):
 
     tk.Checkbutton(barra, text="Marcar todos", variable=var_todos, command=_marcar_todos,
                    bg=CORES["bg_light"], font=('Arial', 9)).pack(side='left', padx=(0, 14))
-    
-    criar_botao_arredondado(
-        barra, "Restaurar selecionados", _restaurar,
-        bg=CORES["success"], fg="white", width=150, height=28, radius=8,
-        font=("Arial", 9, "bold")
-    ).pack(side='left', padx=4)
-    
-    criar_botao_arredondado(
-        barra, "Excluir definitivo", _excluir_def,
-        bg=CORES["danger"], fg="white", width=150, height=28, radius=15,
-        font=("Arial", 9, "bold")
-    ).pack(side='left', padx=4)
+    tk.Button(barra, text="Restaurar selecionados", command=_restaurar, bg=CORES["success"], fg="white",
+              bd=0, padx=10, pady=4, font=('Arial', 9, 'bold'), cursor='hand2').pack(side='left', padx=4)
+    tk.Button(barra, text="Excluir definitivo", command=_excluir_def, bg=CORES["danger"], fg="white",
+              bd=0, padx=10, pady=4, font=('Arial', 9, 'bold'), cursor='hand2').pack(side='left', padx=4)
     return barra
 
-_estado_pagina = {}
+
+# ============================================================
+# LISTAGEM (sem paginação — mostra todos os registros)
+# ============================================================
+_estado_pagina = {}  # mantido só por compatibilidade
 
 def criar_controle_paginacao(parent, chave, bg=None):
+    """Paginação removida: retorna frame vazio (compatibilidade com chamadas existentes)."""
     bg = bg or CORES["bg_light"]
     frame = tk.Frame(parent, bg=bg)
+    # não exibe controles de página
     return frame
 
 def definir_dados_paginados(chave, tree, lista_valores, lista_tags=None, reset_pagina=True):
+    """Carrega TODOS os registros na tree (sem paginação)."""
     if tree is None:
         return
     try:
@@ -1832,6 +1876,7 @@ def atualizar_status_venda(venda_id):
     except:
         pass
 
+# DASHBOARD
 def atualizar_dashboard():
     try:
         atualizar_status_atraso()
@@ -1877,6 +1922,7 @@ def atualizar_dashboard():
     except Exception as e:
         print("Erro dashboard:", e)
 
+# CLIENTES
 def listar_clientes():
     conn = conectar()
     cur = conn.cursor()
@@ -2024,6 +2070,7 @@ def buscar_cep_cliente():
     if not data:
         mostrar_aviso("CEP não encontrado ou sem conexão com a internet.\nVerifique o CEP digitado.")
         return
+    # Preenche endereço, bairro e cidade
     logradouro = data.get("logradouro") or ""
     bairro = data.get("bairro") or ""
     cidade = data.get("localidade") or ""
@@ -2038,10 +2085,12 @@ def buscar_cep_cliente():
         cidade_txt = f"{cidade}/{uf}" if uf else cidade
         entry_cli_cidade.delete(0, tk.END)
         entry_cli_cidade.insert(0, cidade_txt)
+    # Formata CEP
     formatar_cep(entry=entry_cli_cep)
     entry_cli_numero.focus()
     mostrar_sucesso(f"Endereço preenchido!\n{logradouro}\n{bairro} - {cidade}/{uf}", "CEP encontrado")
 
+# FORNECEDORES
 def listar_fornecedores():
     conn = conectar()
     cur = conn.cursor()
@@ -2206,6 +2255,7 @@ def buscar_cep_fornecedor():
     entry_forn_numero.focus()
     mostrar_sucesso(f"Endereço preenchido!\n{logradouro}\n{bairro} - {cidade}/{uf}", "CEP encontrado")
 
+# PRODUTOS
 def listar_produtos():
     conn = conectar()
     cur = conn.cursor()
@@ -2399,6 +2449,7 @@ def limpar_form_produto():
     entry_prod_estmin.insert(0, "5")
     combo_prod_forn.set("")
 
+# ESTOQUE
 def listar_estoque():
     conn = conectar()
     cur = conn.cursor()
@@ -2499,6 +2550,7 @@ def movimentar_estoque():
     finally:
         conn.close()
 
+# VENDAS
 def atualizar_combos():
     conn = conectar()
     cur = conn.cursor()
@@ -2586,6 +2638,8 @@ def adicionar_item_venda():
     atualizar_calculo_cartao()
 
 def _fator_taxa_carrinho():
+    """Retorna (fator_exibicao, total_base, total_final, valor_extra).
+    fator aplica desconto e, se cartão, a taxa — para o subtotal do carrinho."""
     total_bruto = sum(i['subtotal'] for i in carrinho_venda) if carrinho_venda else 0.0
     try:
         desc = float(str(entry_venda_desc.get()).replace(",", ".") or 0)
@@ -2599,6 +2653,7 @@ def _fator_taxa_carrinho():
         forma = combo_venda_forma.get().strip()
     except Exception:
         pass
+    # fator do desconto sobre o bruto
     if total_bruto <= 0:
         return 1.0, 0.0, 0.0, 0.0
     fator_desc = total_base / total_bruto if total_bruto else 1.0
@@ -2617,6 +2672,7 @@ def _fator_taxa_carrinho():
     fator = (total_com_taxa / total_bruto) if total_bruto else 1.0
     return fator, total_base, total_com_taxa, valor_taxa
 
+
 def atualizar_carrinho_tree():
     limpar_tree(tree_venda_carrinho)
     total = 0
@@ -2632,8 +2688,11 @@ def atualizar_carrinho_tree():
         sub = float(item['subtotal'] or 0)
         preco = float(item['preco'] or 0)
         total += sub
+        # desconto rateado por item
         desc_item = (sub / total_bruto * desc_global) if total_bruto > 0 and desc_global > 0 else 0.0
+        # acréscimo (taxa do cartão) rateado por item, só aparece se houver taxa
         acresc_item = (sub / total_bruto * valor_taxa) if total_bruto > 0 and valor_taxa > 0 else 0.0
+        # subtotal com desconto/taxa (fator); preço unitário sempre BRUTO
         sub_exib = sub * fator if total_bruto > 0 else sub
         tree_venda_carrinho.insert(
             "", "end",
@@ -2662,7 +2721,9 @@ def atualizar_carrinho_tree():
         pass
     atualizar_calculo_cartao()
 
+
 def limpar_form_venda():
+    """Zera campos do PDV após finalizar venda (evita carregar dados na próxima)."""
     global carrinho_venda
     carrinho_venda = []
     try:
@@ -2749,7 +2810,9 @@ def _parse_float_br(texto, default=0.0):
         except Exception:
             return default
 
+
 def calcular_total_com_taxa(valor_base, taxa, tipo_taxa="Porcentagem (%)"):
+    """Aplica taxa em % ou em valor (R$). Retorna (total_com_taxa, valor_taxa_aplicada)."""
     try:
         base = float(valor_base or 0)
     except Exception:
@@ -2762,11 +2825,14 @@ def calcular_total_com_taxa(valor_base, taxa, tipo_taxa="Porcentagem (%)"):
         t = 0.0
     tipo = (tipo_taxa or "Porcentagem (%)").strip()
     if tipo.startswith("Valor"):
+        # taxa em reais: soma no total
         total = base + t
         return total, t
+    # porcentagem
     valor_taxa = base * (t / 100.0)
     total = base + valor_taxa
     return total, valor_taxa
+
 
 def atualizar_calculo_cartao():
     try:
@@ -2835,6 +2901,7 @@ def atualizar_calculo_cartao():
         except Exception as e:
             print("Erro labels cartao", e)
 
+        # Total principal da tela = valor já com a taxa somada
         try:
             lbl_venda_total.config(text=formatar_moeda(total_com_taxa), fg="#b45309")
             lbl_venda_total_titulo.config(text="TOTAL DA VENDA (com taxa)")
@@ -2847,19 +2914,29 @@ def atualizar_calculo_cartao():
         print("Erro calculo cartao", e)
 
 def _fmt_num(valor):
+    """Formata número para exibição em campos (3 -> '3', 3.5 -> '3.5', 1500 -> '1500')."""
     try:
         txt = f"{float(valor):.4f}".rstrip("0").rstrip(".")
         return txt if txt and txt != "-0" else "0"
     except Exception:
         return str(valor)
 
+
 def abrir_modal_parcelas_cartao():
+    """Modal para configurar as parcelas do Cartão de Crédito (1-12x), a taxa
+    (% ou R$) e o vencimento da 1ª parcela, com preview das parcelas.
+
+    Os botões de ação ficam em um rodapé fixo (sempre visíveis, independente do
+    tamanho da tela) e há a opção de aplicar a configuração e já FINALIZAR a
+    venda direto do modal.
+    """
     global root, combo_parcelas, entry_taxa, entry_venda_venc, carrinho_venda, entry_venda_desc
     global lbl_cartao_total_com_taxa, lbl_cartao_parcela
 
     if root is None:
         return
 
+    # Total atual do carrinho (já com desconto)
     total_bruto = sum(i['subtotal'] for i in carrinho_venda) if carrinho_venda else 0
     try:
         desconto = float(str(entry_venda_desc.get()).replace(",", ".") or 0)
@@ -2871,6 +2948,7 @@ def abrir_modal_parcelas_cartao():
         mostrar_aviso("Adicione produtos ao carrinho antes de configurar parcelas!\n\nTotal atual: R$ 0,00", "Carrinho Vazio")
         return
 
+    # Valores atuais do PDV
     try:
         parcelas_atual = int(combo_parcelas.get() or 1)
     except Exception:
@@ -2891,6 +2969,7 @@ def abrir_modal_parcelas_cartao():
     if not br_para_iso(venc_base_br):
         venc_base_br = hoje_br()
 
+    # ---------------- Janela ----------------
     modal = tk.Toplevel(root)
     modal.title("Configurar Parcelas - Cartão de Crédito (até 12x)")
     modal.configure(bg="white")
@@ -2923,18 +3002,24 @@ def abrir_modal_parcelas_cartao():
         except Exception:
             pass
 
+    # ---------------- Cabeçalho ----------------
     header = tk.Frame(modal, bg="#f59e0b", height=70)
     header.pack(fill='x', side='top')
     header.pack_propagate(False)
     tk.Label(header, text="Cartão de Crédito - Parcelar em até 12x", bg="#f59e0b", fg="white", font=('Arial', 13, 'bold')).pack(pady=(10, 0))
     tk.Label(header, text=f"Total da venda: {formatar_moeda(total_final)}", bg="#f59e0b", fg="white", font=('Arial', 11, 'bold')).pack()
 
+    # ---------------- Rodapé (botões) ----------------
+    # Empacotado ANTES do corpo e ancorado embaixo: assim os botões nunca são
+    # "empurrados" para fora da janela, mesmo em telas pequenas.
     footer = tk.Frame(modal, bg="#f8fafc", highlightthickness=1, highlightbackground=CORES["border"])
     footer.pack(fill='x', side='bottom')
 
+    # ---------------- Corpo ----------------
     body = tk.Frame(modal, bg="white")
     body.pack(fill='both', expand=True, side='top', padx=20, pady=(12, 6))
 
+    # Configuração
     frame_config = tk.LabelFrame(body, text="Configuração das Parcelas", font=('Arial', 10, 'bold'), bg="white", padx=15, pady=10)
     frame_config.pack(fill='x', pady=(0, 6))
 
@@ -2971,6 +3056,7 @@ def abrir_modal_parcelas_cartao():
 
     _sync_lbl_modal_tipo()
 
+    # Resumo
     frame_resumo = tk.Frame(body, bg="#fef3c7", bd=1, relief='solid')
     frame_resumo.pack(fill='x', pady=6)
     inner_resumo = tk.Frame(frame_resumo, bg="#fef3c7")
@@ -2982,6 +3068,7 @@ def abrir_modal_parcelas_cartao():
     tk.Label(inner_resumo, text="As parcelas serão lançadas em Contas a Receber com vencimentos a cada +30 dias.",
              bg="#fef3c7", font=('Arial', 8, 'italic'), fg="#78350f", anchor='w').pack(anchor='w', pady=(4, 0))
 
+    # Preview das parcelas
     frame_tree = tk.LabelFrame(body, text="Preview das Parcelas - Datas de Vencimento", font=('Arial', 10, 'bold'), bg="white")
     frame_tree.pack(fill='both', expand=True, pady=(6, 0))
 
@@ -3052,7 +3139,10 @@ def abrir_modal_parcelas_cartao():
 
     calcular_preview()
 
+    # ---------------- Ações ----------------
     def _aplicar_no_pdv():
+        """Valida e copia a configuração do modal para os campos do PDV.
+        Retorna (parc, taxa, venc_br, total_com_taxa, valor_parcela) ou None se inválido."""
         parc, taxa, venc_br_modal, total_com_taxa, valor_parcela = calcular_preview()
         if not br_para_iso(venc_br_modal):
             mostrar_aviso("Data de vencimento inválida! Use dd/mm/aaaa", "Data Inválida")
@@ -3076,6 +3166,7 @@ def abrir_modal_parcelas_cartao():
             pass
         entry_venda_venc.delete(0, tk.END)
         entry_venda_venc.insert(0, venc_br_modal)
+        # Recalcula carrinho + totais do cartão no PDV
         try:
             atualizar_carrinho_tree()
         except Exception:
@@ -3083,6 +3174,8 @@ def abrir_modal_parcelas_cartao():
         return parc, taxa, venc_br_modal, total_com_taxa, valor_parcela
 
     def _aplicar_e_fechar():
+        """Aplica as parcelas no PDV e fecha o modal — a venda só é finalizada
+        quando o usuário clicar no botão FINALIZAR VENDA da tela principal."""
         try:
             res = _aplicar_no_pdv()
             if res is None:
@@ -3093,18 +3186,11 @@ def abrir_modal_parcelas_cartao():
 
     frame_btn = tk.Frame(footer, bg="#f8fafc")
     frame_btn.pack(fill='x', padx=20, pady=(10, 4))
-    
-    criar_botao_arredondado(
-        frame_btn, "Cancelar", fechar_modal,
-        bg="#64748b", fg="white", width=120, height=36, radius=15,
-        font=("Arial", 10, "bold")
-    ).pack(side='left', padx=4)
-    
-    criar_botao_arredondado(
-        frame_btn, "Aplicar Parcelas", _aplicar_e_fechar,
-        bg=CORES["success"], fg="white", width=150, height=36, radius=15,
-        font=("Arial", 11, "bold")
-    ).pack(side='right', padx=4)
+    tk.Button(frame_btn, text="Cancelar", command=fechar_modal, bg="#64748b", fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=22, pady=8, cursor='hand2').pack(side='left')
+    tk.Button(frame_btn, text="Aplicar Parcelas", command=_aplicar_e_fechar, bg=CORES["success"], fg="white",
+              font=('Arial', 11, 'bold'), bd=0, padx=28, pady=8, cursor='hand2').pack(side='right')
+    #tk.Label(footer, text="Escolha as parcelas e o acréscimo, clique em Aplicar Parcelas e depois finalize a venda pelo botão principal.", bg="#f8fafc", fg=CORES["text_gray"], font=('Arial', 8)).pack(anchor='w', padx=20, pady=(0, 8))
 
     modal.bind('<Escape>', lambda e: fechar_modal())
     modal.bind('<Return>', lambda e: _aplicar_e_fechar())
@@ -3253,6 +3339,7 @@ def finalizar_venda():
         conn.close()
 
 def listar_vendas():
+    # Histórico de vendas foi removido da tela de PDV; mantém função por compatibilidade
     try:
         _ = tree_vendas
     except Exception:
@@ -3408,6 +3495,7 @@ def excluir_venda_lixeira():
     finally:
         conn.close()
 
+# CAIXA
 def listar_caixa():
     conn = conectar()
     cur = conn.cursor()
@@ -3471,6 +3559,7 @@ def listar_caixa():
         lbl_caixa_info.config(text=f"Total entradas: {formatar_moeda(entradas)} | Total saídas: {formatar_moeda(saidas)}")
     except Exception:
         pass
+
 
 def lancar_caixa_manual():
     valor_str = entry_caixa_valor.get().strip()
@@ -3552,6 +3641,7 @@ def excluir_lancamentos_caixa_em_massa(ids):
     finally:
         conn.close()
 
+# CONTAS A PAGAR
 def listar_contas_pagar():
     atualizar_status_atraso()
     conn = conectar()
@@ -3617,7 +3707,9 @@ def listar_contas_pagar():
         print("Erro listar cp", e)
     conn.close()
 
+
 def _conta_ja_existe_por_documento(tabela, numero_documento, ignorar_id=None):
+    """Retorna True se já existir conta ativa com o mesmo número de documento."""
     if not numero_documento or not str(numero_documento).strip():
         return False
     doc = str(numero_documento).strip()
@@ -3641,7 +3733,9 @@ def _conta_ja_existe_por_documento(tabela, numero_documento, ignorar_id=None):
     finally:
         conn.close()
 
+
 def _conta_id_ja_existe(tabela, conta_id):
+    """Retorna True se o ID já existir na tabela."""
     if conta_id is None or str(conta_id).strip() == "":
         return False
     try:
@@ -3743,6 +3837,7 @@ def salvar_conta_pagar():
         conn.close()
 
 def editar_cp(event=None):
+    """Duplo clique: mostra detalhes da conta a pagar."""
     tree_ativo = tree_cp
     try:
         tab_id = notebook_cp.select()
@@ -3767,6 +3862,7 @@ def editar_cp(event=None):
     )
 
 def pagar_conta():
+    """Paga uma ou várias contas a pagar marcadas no ☐ (ou a linha selecionada)."""
     tree_ativo = _tree_ativa_notebook(notebook_cp, tree_cp)
 
     ids = obter_ids_selecionados(tree_ativo)
@@ -3844,6 +3940,7 @@ def pagar_conta():
         conn.close()
 
 def _tree_ativa_notebook(notebook, tree_fallback):
+    """Retorna a Treeview da aba ativa do notebook (ou fallback)."""
     tree_ativo = tree_fallback
     try:
         tab_id = notebook.select()
@@ -3858,7 +3955,9 @@ def _tree_ativa_notebook(notebook, tree_fallback):
         pass
     return tree_ativo
 
+
 def excluir_cp_selecionados():
+    """Exclui (move para lixeira) as contas marcadas com ☐ na aba ativa."""
     tree_ativo = _tree_ativa_notebook(notebook_cp, tree_cp)
     ids = obter_ids_selecionados(tree_ativo)
     if not ids:
@@ -3868,7 +3967,9 @@ def excluir_cp_selecionados():
         return
     excluir_contas_pagar_em_massa(ids)
 
+
 def excluir_cr_selecionados():
+    """Exclui (move para lixeira) as contas marcadas com ☐ na aba ativa."""
     tree_ativo = _tree_ativa_notebook(notebook_cr, tree_cr)
     ids = obter_ids_selecionados(tree_ativo)
     if not ids:
@@ -3877,6 +3978,7 @@ def excluir_cr_selecionados():
     if not confirmar_moderno("Excluir selecionados", f"Mover {len(ids)} conta(s) a receber para a lixeira?"):
         return
     excluir_contas_receber_em_massa(ids)
+
 
 def excluir_cp():
     if not verificar_permissao_exclusao():
@@ -3974,7 +4076,10 @@ def cancelar_cp():
 def limpar_form_cp():
     pass
 
+# CONTAS A RECEBER
+
 def limpar_descricao_conta(desc):
+    """Remove 'Consumidor Final' da descrição (já aparece na coluna Cliente)."""
     d = str(desc or "").strip()
     for trecho in (
         " - Consumidor Final",
@@ -4158,6 +4263,7 @@ def salvar_conta_receber():
         conn.close()
 
 def editar_cr(event=None):
+    """Duplo clique: mostra detalhes da conta a receber."""
     tree_ativo = tree_cr
     try:
         tab_id = notebook_cr.select()
@@ -4176,6 +4282,7 @@ def editar_cr(event=None):
     if not sel:
         return
     vals = tree_ativo.item(sel[0])['values']
+    # ID, Cliente, Descrição, Valor, Data Venda, Venc BR, Status, Parcela, Sel
     data_venda = vals[4] if len(vals) > 4 else "-"
     venc = vals[5] if len(vals) > 5 else "-"
     status = vals[6] if len(vals) > 6 else "-"
@@ -4185,7 +4292,10 @@ def editar_cr(event=None):
     )
     mostrar_info(msg, "Conta a Receber #" + str(vals[0]))
 
+
+
 def receber_conta():
+    """Recebe uma ou várias contas a receber marcadas no ☐ (ou a linha selecionada)."""
     tree_ativo = _tree_ativa_notebook(notebook_cr, tree_cr)
 
     ids = obter_ids_selecionados(tree_ativo)
@@ -4271,6 +4381,8 @@ def receber_conta():
         mostrar_erro(str(e))
     finally:
         conn.close()
+
+
 
 def excluir_cr():
     if not verificar_permissao_exclusao():
@@ -4379,6 +4491,7 @@ def limpar_form_cr():
     pass
 
 def _add_months(data_iso, months):
+    """Soma meses a uma data ISO YYYY-MM-DD"""
     try:
         dt = datetime.strptime(data_iso[:10], "%Y-%m-%d")
         m = dt.month - 1 + months
@@ -4390,6 +4503,7 @@ def _add_months(data_iso, months):
         return (datetime.strptime(data_iso[:10], "%Y-%m-%d") + timedelta(days=30 * months)).strftime("%Y-%m-%d")
 
 def abrir_modal_conta_pagar():
+    """Modal para incluir conta a pagar (única ou mensal)."""
     global root
     modal = tk.Toplevel(root)
     modal.title("Incluir Conta a Pagar")
@@ -4528,6 +4642,7 @@ def abrir_modal_conta_pagar():
         if ocor == "Mensal":
             desc_base = f"{desc_base} (Mensal)" if doc else "Conta a pagar (Mensal)"
 
+        # Trava: mesmo nº de documento não pode ser cadastrado de novo
         if doc and _conta_ja_existe_por_documento("contas_a_pagar", doc):
             mostrar_aviso(f"Já existe uma conta a pagar com o nº de documento/ID \"{doc}\".\nNão é permitido cadastrar em duplicidade.")
             return
@@ -4535,7 +4650,7 @@ def abrir_modal_conta_pagar():
         conn = conectar()
         cur = conn.cursor()
         try:
-            valor_mensal = valor
+            valor_mensal = valor  # mensal = valor integral em cada mês (não divide)
             for i in range(1, n_meses + 1):
                 venc_i = venc_iso if i == 1 else _add_months(venc_iso, i - 1)
                 desc = desc_base if n_meses == 1 else f"{desc_base} - {i}/{n_meses}"
@@ -4558,23 +4673,15 @@ def abrir_modal_conta_pagar():
 
     frame_b = tk.Frame(body, bg="white")
     frame_b.grid(row=9, column=0, columnspan=2, pady=16)
-    
-    criar_botao_arredondado(
-        frame_b, "💾 Salvar", salvar,
-        bg=CORES["success"], fg="white", width=120, height=36, radius=15,
-        font=("Arial", 10, "bold")
-    ).pack(side='left', padx=8)
-    
-    criar_botao_arredondado(
-        frame_b, "Cancelar", modal.destroy,
-        bg="#64748b", fg="white", width=120, height=36, radius=15,
-        font=("Arial", 10)
-    ).pack(side='left', padx=8)
-    
+    tk.Button(frame_b, text="💾 Salvar", command=salvar, bg=CORES["success"], fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=20, pady=8, cursor='hand2').pack(side='left', padx=8)
+    tk.Button(frame_b, text="Cancelar", command=modal.destroy, bg="#64748b", fg="white",
+              font=('Arial', 10), bd=0, padx=16, pady=8, cursor='hand2').pack(side='left', padx=8)
     modal.bind('<Escape>', lambda e: modal.destroy())
     combo_forn.focus()
 
 def abrir_modal_conta_receber():
+    """Modal para incluir conta a receber (única ou mensal)."""
     global root
     modal = tk.Toplevel(root)
     modal.title("Incluir Conta a Receber")
@@ -4631,7 +4738,7 @@ def abrir_modal_conta_receber():
     entry_valor.grid(row=4, column=1, sticky='w', pady=6)
 
     row_lbl("Forma recebimento*:", 5)
-    combo_forma = ttk.Combobox(body, width=30, values=["PIX", "Dinheiro", "Boleto", "Cartão Débito", "Cartão Crédito"])
+    combo_forma = ttk.Combobox(body, width=30, values=["PIX", "Dinheiro", "Boleto", "Cartão Débito", "Cartão Crédito", "Transferência"])
     combo_forma.grid(row=5, column=1, sticky='w', pady=6)
     combo_forma.set("PIX")
 
@@ -4712,6 +4819,7 @@ def abrir_modal_conta_receber():
         if ocor == "Mensal":
             desc_base = f"{desc_base} (Mensal)" if doc else "Conta a receber (Mensal)"
 
+        # Trava: mesmo nº de documento não pode ser cadastrado de novo
         if doc and _conta_ja_existe_por_documento("contas_a_receber", doc):
             mostrar_aviso(f"Já existe uma conta a receber com o nº de documento/ID \"{doc}\".\nNão é permitido cadastrar em duplicidade.")
             return
@@ -4719,7 +4827,7 @@ def abrir_modal_conta_receber():
         conn = conectar()
         cur = conn.cursor()
         try:
-            valor_mensal = valor
+            valor_mensal = valor  # mensal = valor integral em cada mês (não divide)
             for i in range(1, n_meses + 1):
                 venc_i = venc_iso if i == 1 else _add_months(venc_iso, i - 1)
                 desc = desc_base if n_meses == 1 else f"{desc_base} - {i}/{n_meses}"
@@ -4742,22 +4850,14 @@ def abrir_modal_conta_receber():
 
     frame_b = tk.Frame(body, bg="white")
     frame_b.grid(row=9, column=0, columnspan=2, pady=16)
-    
-    criar_botao_arredondado(
-        frame_b, "💾 Salvar", salvar,
-        bg=CORES["success"], fg="white", width=120, height=36, radius=15,
-        font=("Arial", 10, "bold")
-    ).pack(side='left', padx=8)
-    
-    criar_botao_arredondado(
-        frame_b, "Cancelar", modal.destroy,
-        bg="#64748b", fg="white", width=120, height=36, radius=15,
-        font=("Arial", 10)
-    ).pack(side='left', padx=8)
-    
+    tk.Button(frame_b, text="💾 Salvar", command=salvar, bg=CORES["success"], fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=20, pady=8, cursor='hand2').pack(side='left', padx=8)
+    tk.Button(frame_b, text="Cancelar", command=modal.destroy, bg="#64748b", fg="white",
+              font=('Arial', 10), bd=0, padx=16, pady=8, cursor='hand2').pack(side='left', padx=8)
     modal.bind('<Escape>', lambda e: modal.destroy())
     combo_cli.focus()
 
+# RELATÓRIOS
 def relatorio_vendas():
     data_ini_br = entry_rel_venda_ini.get().strip()
     data_fim_br = entry_rel_venda_fim.get().strip()
@@ -4856,6 +4956,7 @@ def relatorio_contas():
     dados = [[r[0], r[1], r[2], r[3], r[4], iso_para_br(r[5]), r[6], iso_para_br(r[7])] for r in rows]
     exportar_dados(colunas, dados, f"relatorio_contas_{hoje_iso()}.xlsx")
 
+# LIXEIRA
 def listar_lixeira_clientes():
     conn = conectar()
     cur = conn.cursor()
@@ -4911,6 +5012,7 @@ def listar_lixeira_cr():
     dados = [(row[0], row[1], formatar_moeda(row[2]), iso_para_br(row[3]), formatar_status(row[4]), iso_para_br(row[5]), "☐") for row in cur.fetchall()]
     conn.close()
     definir_dados_paginados("lix_cr", tree_lixeira_cr, dados)
+
 
 def restaurar_itens_em_massa(tabela, tree):
     ids = obter_ids_selecionados(tree)
@@ -5029,6 +5131,7 @@ def excluir_definitivo_item(tabela, tree):
     finally:
         conn.close()
 
+# USUÁRIOS
 def listar_usuarios():
     if not eh_admin():
         try:
@@ -5507,17 +5610,7 @@ def criar_interface():
     except Exception:
         pass
 
-    criar_botao_arredondado(
-    frame_user_top,
-    "Sair",
-    logout,
-    bg=CORES["danger"],
-    fg="white",
-    width=80,
-    height=32,
-    radius=8,
-    font=("Arial", 9, "bold")
-).pack(side="left", padx=10)
+    tk.Button(frame_user_top, text="Sair", command=logout, bg=CORES["danger"], fg="white", font=('Arial', 9, 'bold'), bd=0, padx=12, pady=4, cursor='hand2').pack(side='left', padx=10)
     
     container = tk.Frame(root, bg=CORES["bg_light"])
     container.pack(fill='both', expand=True)
@@ -5756,17 +5849,7 @@ def criar_interface():
     tree_dashboard_vendas.column("Data", width=150)
     tree_dashboard_vendas.column("Cliente", width=200)
     tree_dashboard_vendas.pack(fill='both', expand=True, padx=10, pady=10)
-    criar_botao_arredondado(
-    frame_dash_vendas,
-    "Atualizar Dashboard",
-    atualizar_dashboard,
-    bg=CORES["primary"],
-    fg="white",
-    width=170,
-    height=36,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(pady=8)
+    tk.Button(frame_dash_vendas, text="🔄 Atualizar Dashboard", command=atualizar_dashboard, bg=CORES["primary"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=15, pady=6).pack(pady=8)
     
     # CLIENTES — labels com largura fixa para alinhamento
     frame_cli_form = tk.LabelFrame(tela_clientes, text=" Cadastro de Cliente", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
@@ -5803,17 +5886,8 @@ def criar_interface():
     entry_cli_cep.pack(side='left')
     entry_cli_cep.bind("<KeyRelease>", formatar_cep)
     entry_cli_cep.bind("<Return>", lambda e: buscar_cep_cliente())
-    criar_botao_arredondado(
-    frame_cli_cep,
-    "🔍 CEP",
-    buscar_cep_cliente,
-    bg=CORES["primary"],
-    fg="white",
-    width=65,
-    height=30,
-    radius=8,
-    font=("Arial", 8, "bold")
-).pack(side="left", padx=(6, 0))
+    tk.Button(frame_cli_cep, text="🔍 CEP", command=buscar_cep_cliente, bg=CORES["primary"], fg="white",
+              font=('Arial', 8, 'bold'), bd=0, padx=8, pady=2, cursor='hand2').pack(side='left', padx=(6, 0))
     # Linha 2
     _lbl_cli("Endereço:", 2, 0)
     entry_cli_end = tk.Entry(frame_cli_form, width=30)
@@ -5831,31 +5905,8 @@ def criar_interface():
     # Botões
     frame_cli_btn = tk.Frame(frame_cli_form, bg=CORES["bg_white"])
     frame_cli_btn.grid(row=4, column=0, columnspan=6, pady=12, sticky='w')
-    
-    criar_botao_arredondado(
-    frame_cli_btn,
-    "Salvar",
-    salvar_cliente,
-    bg=CORES["success"],
-    fg="white",
-    width=120,
-    height=36,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=5)
-    
-    criar_botao_arredondado(
-    frame_cli_btn,
-    "Limpar",
-    limpar_form_cliente,
-    bg="#64748b",
-    fg="white",
-    width=110,
-    height=36,
-    radius=10,
-    font=("Arial", 10)
-).pack(side="left", padx=5)
-    
+    tk.Button(frame_cli_btn, text="Salvar", command=salvar_cliente, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=5)
+    tk.Button(frame_cli_btn, text="Limpar", command=limpar_form_cliente, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=5)
     frame_cli_busca = tk.Frame(tela_clientes, bg=CORES["bg_light"])
     frame_cli_busca.pack(fill='x', padx=20, pady=5)
     tk.Label(frame_cli_busca, text="🔍 Buscar (digite o cliente):", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
@@ -5914,17 +5965,8 @@ def criar_interface():
     entry_forn_cep.pack(side='left')
     entry_forn_cep.bind("<KeyRelease>", formatar_cep)
     entry_forn_cep.bind("<Return>", lambda e: buscar_cep_fornecedor())
-    criar_botao_arredondado(
-    frame_forn_cep,
-    "🔍 CEP",
-    buscar_cep_fornecedor,
-    bg=CORES["primary"],
-    fg="white",
-    width=65,
-    height=30,
-    radius=8,
-    font=("Arial", 8, "bold")
-).pack(side="left", padx=(6, 0))
+    tk.Button(frame_forn_cep, text="🔍 CEP", command=buscar_cep_fornecedor, bg=CORES["primary"], fg="white",
+              font=('Arial', 8, 'bold'), bd=0, padx=8, pady=2, cursor='hand2').pack(side='left', padx=(6, 0))
     _lbl_forn("Endereço:", 2, 0)
     entry_forn_end = tk.Entry(frame_forn_form, width=30)
     entry_forn_end.grid(row=2, column=1, columnspan=2, padx=4, pady=4, sticky='ew')
@@ -5939,44 +5981,11 @@ def criar_interface():
     entry_forn_cidade.grid(row=3, column=3, columnspan=2, padx=4, pady=4, sticky='ew')
     frame_forn_btn = tk.Frame(frame_forn_form, bg=CORES["bg_white"])
     frame_forn_btn.grid(row=4, column=0, columnspan=6, pady=12, sticky='w')
-
-    #tk.Button(frame_forn_btn, text="Salvar", command=salvar_fornecedor, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=5)
-    criar_botao_arredondado(
-    frame_forn_btn,
-    "Salvar",
-    salvar_fornecedor,
-    bg=CORES["success"],
-    fg="white",
-    width=120,
-    height=36,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=5)
-
-
-    criar_botao_arredondado(
-    frame_forn_btn,
-    "Limpar",
-    limpar_form_fornecedor,
-    bg="#64748b",
-    fg="white",
-    width=110,
-    height=36,
-    radius=10,
-    font=("Arial", 10)
-).pack(side="left", padx=5)
-    
+    tk.Button(frame_forn_btn, text="Salvar", command=salvar_fornecedor, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=5)
+    tk.Button(frame_forn_btn, text="Limpar", command=limpar_form_fornecedor, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=5)
     frame_forn_busca = tk.Frame(tela_fornecedores, bg=CORES["bg_light"])
-
     frame_forn_busca.pack(fill='x', padx=20, pady=5)
-    tk.Label(
-    frame_forn_busca,
-    text="🔍 Buscar (digite o fornecedor):",
-    bg=CORES["bg_light"],
-    font=("Arial", 9, "bold"),
-    fg=CORES["text_dark"]
-).pack(side="left")
-    
+    tk.Label(frame_forn_busca, text="🔍 Buscar (digite o fornecedor):", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
     entry_busca_forn = tk.Entry(frame_forn_busca, width=40, font=('Arial', 10))
     entry_busca_forn.pack(side='left', padx=10, ipady=3)
     frame_forn_tree = tk.Frame(tela_fornecedores, bg=CORES["bg_white"], bd=1, relief='solid')
@@ -6038,30 +6047,8 @@ def criar_interface():
     entry_prod_desc.grid(row=2, column=4, columnspan=4, padx=4, pady=4, sticky='w')
     frame_prod_btn = tk.Frame(frame_prod_form, bg=CORES["bg_white"])
     frame_prod_btn.grid(row=3, column=0, columnspan=8, pady=12, sticky='w')
-    criar_botao_arredondado(
-    frame_prod_btn,
-    "Salvar",
-    salvar_produto,
-    bg=CORES["success"],
-    fg="white",
-    width=120,
-    height=36,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=5)
-    
-    criar_botao_arredondado(
-    frame_prod_btn,
-    "Limpar",
-    limpar_form_produto,
-    bg="#64748b",
-    fg="white",
-    width=110,
-    height=36,
-    radius=10,
-    font=("Arial", 10)
-).pack(side="left", padx=5)
-    
+    tk.Button(frame_prod_btn, text="Salvar", command=salvar_produto, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=5)
+    tk.Button(frame_prod_btn, text="Limpar", command=limpar_form_produto, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=5)
     frame_prod_busca = tk.Frame(tela_produtos, bg=CORES["bg_light"])
     frame_prod_busca.pack(fill='x', padx=20, pady=5)
     tk.Label(frame_prod_busca, text="🔍 Buscar (digite o produto):", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
@@ -6111,17 +6098,7 @@ def criar_interface():
     tk.Label(frame_est_mov, text="Motivo:", bg=CORES["bg_white"]).grid(row=1,column=2, sticky='w')
     entry_est_motivo = tk.Entry(frame_est_mov, width=28)
     entry_est_motivo.grid(row=1,column=3, padx=5, pady=4)
-    criar_botao_arredondado(
-    frame_est_mov,
-    "Movimentar",
-    movimentar_estoque,
-    bg=CORES["primary"],
-    fg="white",
-    width=120,
-    height=36,
-    radius=10,
-    font=("Arial", 9, "bold")
-).grid(row=1, column=4, padx=10)
+    tk.Button(frame_est_mov, text="✅ Movimentar", command=movimentar_estoque, bg=CORES["primary"], fg="white", font=('Arial', 9, 'bold'), bd=0, padx=12, pady=5).grid(row=1,column=4, padx=10)
     frame_est_filtro = tk.Frame(tela_estoque, bg=CORES["bg_light"])
     frame_est_filtro.pack(fill='x', padx=20, pady=5)
     tk.Label(frame_est_filtro, text="🔍 Filtrar movimentação", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
@@ -6260,29 +6237,17 @@ def criar_interface():
 
     LARGURA_BOTAO = 22
 
-    criar_botao_arredondado(
-    frame_venda_botoes_topo,
-    "Adicionar",
-    adicionar_item_venda,
-    bg=CORES["primary"],
-    fg="white",
-    width=120,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).grid(row=0, column=0, sticky="w", padx=(0, 6))
+    tk.Button(
+        frame_venda_botoes_topo, text="Adicionar", command=adicionar_item_venda,
+        bg=CORES["primary"], fg="white", font=('Arial', 10, 'bold'),
+        width=LARGURA_BOTAO, bd=0, pady=8
+    ).grid(row=0, column=0, sticky="w", padx=(0, 6))
 
-    criar_botao_arredondado(
-    frame_venda_botoes_topo,
-    "Remover",
-    remover_item_venda,
-    bg=CORES["danger"],
-    fg="white",
-    width=120,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).grid(row=0, column=1, sticky="w", padx=6)
+    tk.Button(
+        frame_venda_botoes_topo, text="Remover", command=remover_item_venda,
+        bg=CORES["danger"], fg="white", font=('Arial', 10, 'bold'),
+        width=LARGURA_BOTAO, bd=0, pady=8
+    ).grid(row=0, column=1, sticky="w", padx=6)
 
     def _abrir_opcoes_forma_pagamento():
         """Abre um modal com as formas de pagamento disponíveis (o campo antigo
@@ -6337,29 +6302,17 @@ def criar_interface():
     frame_venda_botoes = tk.Frame(tela_vendas, bg=CORES["bg_white"])
     frame_venda_botoes.pack(side='bottom', anchor='sw', fill='x', padx=20, pady=10)
 
-    criar_botao_arredondado(
-    frame_venda_botoes,
-    "Forma de Pagamento",
-    _abrir_opcoes_forma_pagamento,
-    bg=CORES["info"],
-    fg="white",
-    width=150,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).grid(row=0, column=0, sticky="w", padx=(0, 6))
+    tk.Button(
+        frame_venda_botoes, text="Forma de Pagamento", command=_abrir_opcoes_forma_pagamento,
+        bg=CORES["info"], fg="white", font=('Arial', 10, 'bold'),
+        width=LARGURA_BOTAO, bd=0, pady=8
+    ).grid(row=0, column=0, sticky="w", padx=(0, 6))
 
-    criar_botao_arredondado(
-    frame_venda_botoes,
-    "Finalizar Venda",
-    finalizar_venda,
-    bg=CORES["success"],
-    fg="white",
-    width=150,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).grid(row=0, column=1, sticky="w", padx=6)
+    tk.Button(
+        frame_venda_botoes, text="Finalizar Venda", command=finalizar_venda,
+        bg=CORES["success"], fg="white", font=('Arial', 10, 'bold'),
+        width=LARGURA_BOTAO, bd=0, pady=8
+    ).grid(row=0, column=1, sticky="w", padx=6)
     
     
     frame_venda_carrinho = tk.LabelFrame(tela_vendas, text="Carrinho", font=('Arial', 10, 'bold'), bg=CORES["bg_white"])
@@ -6411,17 +6364,7 @@ def criar_interface():
     combo_caixa_forma = ttk.Combobox(frame_caixa_manual, width=14, values=["Dinheiro","PIX","Cartão","Transferência","Manual"])
     combo_caixa_forma.grid(row=0,column=7, padx=5, pady=4)
     combo_caixa_forma.set("Dinheiro")
-    criar_botao_arredondado(
-    frame_caixa_manual,
-    "Lançar",
-    lancar_caixa_manual,
-    bg=CORES["primary"],
-    fg="white",
-    width=100,
-    height=36,
-    radius=10,
-    font=("Arial", 9, "bold")
-).grid(row=0, column=8, padx=10)
+    tk.Button(frame_caixa_manual, text="Lançar", command=lancar_caixa_manual, bg=CORES["primary"], fg="white", font=('Arial', 9, 'bold'), bd=0, padx=12, pady=5).grid(row=0,column=8, padx=10)
     frame_caixa_tree = tk.Frame(tela_caixa, bg=CORES["bg_white"], bd=1, relief='solid')
     frame_caixa_tree.pack(fill='both', expand=True, padx=20, pady=10)
     cols_caixa = ("ID","Data BR","Tipo","Valor","Descrição","Cliente/Fornecedor","Origem","Forma","Sel")
@@ -6465,18 +6408,8 @@ def criar_interface():
     # Barra superior: incluir conta
     frame_cp_top = tk.Frame(tela_cp, bg=CORES["bg_light"])
     frame_cp_top.pack(fill='x', padx=20, pady=(0, 5))
-    criar_botao_arredondado(
-    frame_cp_top,
-    "➕ Incluir Conta a Pagar",
-    abrir_modal_conta_pagar,
-    bg=CORES["success"],
-    fg="white",
-    width=190,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left")
-    cursor="hand2"
+    tk.Button(frame_cp_top, text="➕ Incluir Conta a Pagar", command=abrir_modal_conta_pagar,
+              bg=CORES["success"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=16, pady=8, cursor='hand2').pack(side='left')
     # Dummies ocultos (compatibilidade)
     _dummy_cp = tk.Frame(tela_cp)
     combo_cp_forn = ttk.Combobox(_dummy_cp)
@@ -6492,39 +6425,12 @@ def criar_interface():
     
     frame_cp_acoes = tk.Frame(tela_cp, bg=CORES["bg_light"])
     frame_cp_acoes.pack(fill='x', side='bottom', padx=20, pady=10)
-    criar_botao_arredondado(
-    frame_cp_acoes,
-    "Pagar selecionadas",
-    pagar_conta,
-    bg=CORES["primary"],
-    fg="white",
-    width=180,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=(0, 8))
-    criar_botao_arredondado(
-    frame_cp_acoes,
-    "Cancelar",
-    cancelar_cp,
-    bg=CORES["warning"],
-    fg="white",
-    width=180,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=8)
-    criar_botao_arredondado(
-    frame_cp_acoes,
-    "Excluir selecionados",
-    excluir_cp_selecionados,
-    bg=CORES["danger"],
-    fg="white",
-    width=180,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=8)
+    tk.Button(frame_cp_acoes, text="Pagar selecionadas", command=pagar_conta, bg=CORES["primary"], fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=(0, 8))
+    tk.Button(frame_cp_acoes, text="Cancelar", command=cancelar_cp, bg=CORES["warning"], fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=8)
+    tk.Button(frame_cp_acoes, text="Excluir selecionados", command=excluir_cp_selecionados, bg=CORES["danger"], fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=8)
 
     notebook_cp = ttk.Notebook(tela_cp)
     notebook_cp.pack(fill='both', expand=True, padx=20, pady=5)
@@ -6598,41 +6504,12 @@ def criar_interface():
     
     frame_cr_acoes = tk.Frame(tela_cr, bg=CORES["bg_light"])
     frame_cr_acoes.pack(fill='x', side='bottom', padx=20, pady=10)
-    criar_botao_arredondado(
-    frame_cr_acoes,
-    "Receber selecionadas",
-    receber_conta,
-    bg=CORES["primary"],
-    fg="white",
-    width=180,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=(0, 8))
-
-    criar_botao_arredondado(
-    frame_cr_acoes,
-    "Cancelar",
-    cancelar_cr,
-    bg=CORES["warning"],
-    fg="white",
-    width=180,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=8)
-
-    criar_botao_arredondado(
-    frame_cr_acoes,
-    "Excluir selecionados",
-    excluir_cr_selecionados,
-    bg=CORES["danger"],
-    fg="white",
-    width=180,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=8)
+    tk.Button(frame_cr_acoes, text="Receber selecionadas", command=receber_conta, bg=CORES["primary"], fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=(0, 8))
+    tk.Button(frame_cr_acoes, text="Cancelar", command=cancelar_cr, bg=CORES["warning"], fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=8)
+    tk.Button(frame_cr_acoes, text="Excluir selecionados", command=excluir_cr_selecionados, bg=CORES["danger"], fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=8)
 
     notebook_cr = ttk.Notebook(tela_cr)
     notebook_cr.pack(fill='both', expand=True, padx=20, pady=5)
@@ -6681,8 +6558,8 @@ def criar_interface():
     # RELATÓRIOS
     frame_rel = tk.Frame(tela_relatorios, bg=CORES["bg_light"], padx=20, pady=20)
     frame_rel.pack(fill='both', expand=True)
-    tk.Label(frame_rel, text="EXPORTAR RELATÓRIOS", font=('Arial', 14, 'bold'), bg=CORES["bg_light"], fg=CORES["text_dark"]).grid(row=0,column=0,columnspan=3, pady=15)
-    frame_rel_venda = tk.LabelFrame(frame_rel, text="Relatório de Vendas", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
+    tk.Label(frame_rel, text="📑 EXPORTAR RELATÓRIOS - Datas no padrão BR dd/mm/aaaa", font=('Arial', 14, 'bold'), bg=CORES["bg_light"], fg=CORES["text_dark"]).grid(row=0,column=0,columnspan=3, pady=15)
+    frame_rel_venda = tk.LabelFrame(frame_rel, text="📊 Relatório de Vendas", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
     frame_rel_venda.grid(row=1,column=0, padx=10, pady=10, sticky='ew')
     tk.Label(frame_rel_venda, text="Data Inicial dd/mm/aaaa:", bg=CORES["bg_white"]).grid(row=0,column=0, sticky='w', pady=3)
     entry_rel_venda_ini = tk.Entry(frame_rel_venda, width=15)
@@ -6692,31 +6569,16 @@ def criar_interface():
     entry_rel_venda_fim = tk.Entry(frame_rel_venda, width=15)
     entry_rel_venda_fim.grid(row=1,column=1, padx=5, pady=3)
     ativar_seletor_data(entry_rel_venda_fim)
-    criar_botao_arredondado(
-    frame_rel_venda,
-    "Exportar Vendas",
-    relatorio_vendas,
-    bg=CORES["primary"],
-    fg="white",
-    width=180,
-    height=36,
-    radius=10,
-    font=("Arial", 10, "bold")
-).grid(
-    row=2,
-    column=0,
-    columnspan=2,
-    pady=12
-)
-    frame_rel_est = tk.LabelFrame(frame_rel, text="Relatório de Estoque", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
+    tk.Button(frame_rel_venda, text="📊 Exportar Vendas", command=relatorio_vendas, bg=CORES["primary"], fg="white", width=20, font=('Arial', 10, 'bold'), bd=0, pady=6).grid(row=2,column=0,columnspan=2, pady=12)
+    frame_rel_est = tk.LabelFrame(frame_rel, text="📦 Relatório de Estoque", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
     frame_rel_est.grid(row=1,column=1, padx=10, pady=10, sticky='ew')
     tk.Label(frame_rel_est, text="Exporta todos os produtos\ncom estoque atual, custo, venda.", bg=CORES["bg_white"], justify='left').grid(row=0,column=0, pady=5)
-    tk.Button(frame_rel_est, text="Exportar Estoque", command=relatorio_estoque, bg=CORES["success"], fg="white", width=20, font=('Arial', 10, 'bold'), bd=0, pady=6).grid(row=1,column=0, pady=12)
-    frame_rel_cli = tk.LabelFrame(frame_rel, text="Relatório de Clientes", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
+    tk.Button(frame_rel_est, text="📦 Exportar Estoque", command=relatorio_estoque, bg=CORES["success"], fg="white", width=20, font=('Arial', 10, 'bold'), bd=0, pady=6).grid(row=1,column=0, pady=12)
+    frame_rel_cli = tk.LabelFrame(frame_rel, text="👥 Relatório de Clientes", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
     frame_rel_cli.grid(row=1,column=2, padx=10, pady=10, sticky='ew')
     tk.Label(frame_rel_cli, text="Exporta lista completa\nde clientes cadastrados.", bg=CORES["bg_white"], justify='left').grid(row=0,column=0, pady=5)
-    tk.Button(frame_rel_cli, text="Exportar Clientes", command=relatorio_clientes, bg=CORES["purple"], fg="white", width=20, font=('Arial', 10, 'bold'), bd=0, pady=6).grid(row=1,column=0, pady=12)
-    frame_rel_caixa = tk.LabelFrame(frame_rel, text="Relatório de Caixa", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
+    tk.Button(frame_rel_cli, text="👥 Exportar Clientes", command=relatorio_clientes, bg=CORES["purple"], fg="white", width=20, font=('Arial', 10, 'bold'), bd=0, pady=6).grid(row=1,column=0, pady=12)
+    frame_rel_caixa = tk.LabelFrame(frame_rel, text="💰 Relatório de Caixa", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
     frame_rel_caixa.grid(row=2,column=0, padx=10, pady=10, sticky='ew')
     tk.Label(frame_rel_caixa, text="Data Inicial dd/mm/aaaa:", bg=CORES["bg_white"]).grid(row=0,column=0, sticky='w', pady=3)
     entry_rel_caixa_ini = tk.Entry(frame_rel_caixa, width=15)
@@ -6726,12 +6588,12 @@ def criar_interface():
     entry_rel_caixa_fim = tk.Entry(frame_rel_caixa, width=15)
     entry_rel_caixa_fim.grid(row=1,column=1, padx=5, pady=3)
     ativar_seletor_data(entry_rel_caixa_fim)
-    tk.Button(frame_rel_caixa, text="Exportar Caixa", command=relatorio_caixa, bg="#f97316", fg="white", width=20, font=('Arial', 10, 'bold'), bd=0, pady=6).grid(row=2,column=0,columnspan=2, pady=12)
-    frame_rel_contas = tk.LabelFrame(frame_rel, text="Relatório Contas", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
+    tk.Button(frame_rel_caixa, text="💰 Exportar Caixa", command=relatorio_caixa, bg="#f97316", fg="white", width=20, font=('Arial', 10, 'bold'), bd=0, pady=6).grid(row=2,column=0,columnspan=2, pady=12)
+    frame_rel_contas = tk.LabelFrame(frame_rel, text="📑 Relatório Contas", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
     frame_rel_contas.grid(row=2,column=1, padx=10, pady=10, sticky='ew')
     tk.Label(frame_rel_contas, text="Exporta todas as contas\na pagar e a receber.", bg=CORES["bg_white"], justify='left').grid(row=0,column=0, pady=5)
-    tk.Button(frame_rel_contas, text="Exportar Contas", command=relatorio_contas, bg=CORES["danger"], fg="white", width=20, font=('Arial', 10, 'bold'), bd=0, pady=6).grid(row=1,column=0, pady=12)
-    frame_info = tk.LabelFrame(frame_rel, text="ℹInformações", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
+    tk.Button(frame_rel_contas, text="📑 Exportar Contas", command=relatorio_contas, bg=CORES["danger"], fg="white", width=20, font=('Arial', 10, 'bold'), bd=0, pady=6).grid(row=1,column=0, pady=12)
+    frame_info = tk.LabelFrame(frame_rel, text="ℹ️ Informações", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
     frame_info.grid(row=2,column=2, padx=10, pady=10, sticky='ew')
     info_text = f"""
 Sistema v3.1 Corrigido
@@ -6748,7 +6610,7 @@ copiado, distribuído ou modificado sem autorização prévia.
     # LIXEIRA
     frame_lixeira_top = tk.Frame(tela_lixeira, bg=CORES["bg_light"])
     frame_lixeira_top.pack(fill='x', padx=20, pady=10)
-    tk.Label(frame_lixeira_top, text="Lixeira - Itens excluídos", font=('Arial', 14, 'bold'), bg=CORES["bg_light"], fg=CORES["danger"]).pack(side='left')
+    tk.Label(frame_lixeira_top, text="Lixeira - Itens Excluídos", font=('Arial', 14, 'bold'), bg=CORES["bg_light"], fg=CORES["danger"]).pack(side='left')
     notebook_lixeira = ttk.Notebook(tela_lixeira)
     notebook_lixeira.pack(fill='both', expand=True, padx=20, pady=10)
 
@@ -6916,54 +6778,14 @@ copiado, distribuído ou modificado sem autorização prévia.
 
     frame_bk_acoes = tk.Frame(tela_backup, bg=CORES["bg_light"])
     frame_bk_acoes.pack(fill='x', padx=20, pady=8)
-
-    criar_botao_arredondado(
-    frame_bk_acoes,
-    "Gerar backup agora",
-    _backup_manual,
-    bg=CORES["success"],
-    fg="white",
-    width=160,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=(0, 8))
-    
-    criar_botao_arredondado(
-    frame_bk_acoes,
-    "Exportar backup",
-    _exportar_backup,
-    bg=CORES["primary"],
-    fg="white",
-    width=150,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=4)
-
-    criar_botao_arredondado(
-    frame_bk_acoes,
-    "Importar / Restaurar de arquivo",
-    _restaurar_arquivo,
-    bg=CORES["warning"],
-    fg="white",
-    width=210,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=4)
-
-    criar_botao_arredondado(
-    frame_bk_acoes,
-    "Atualizar dados",
-    _atualizar_dados_manual,
-    bg=CORES["purple"],
-    fg="white",
-    width=150,
-    height=40,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="right")
+    tk.Button(frame_bk_acoes, text="Gerar backup agora", command=_backup_manual,
+              bg=CORES["success"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=(0, 8))
+    tk.Button(frame_bk_acoes, text="Exportar backup", command=_exportar_backup,
+              bg=CORES["primary"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=4)
+    tk.Button(frame_bk_acoes, text="Importar / Restaurar de arquivo", command=_restaurar_arquivo,
+              bg=CORES["warning"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=4)
+    tk.Button(frame_bk_acoes, text="Atualizar dados", command=_atualizar_dados_manual,
+              bg=CORES["purple"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='right')
 
     frame_bk_tree = tk.LabelFrame(
         tela_backup,
@@ -7076,30 +6898,8 @@ copiado, distribuído ou modificado sem autorização prévia.
     ).grid(row=3, column=0, columnspan=4, sticky='w', padx=5, pady=(4, 2))
     frame_usu_btn = tk.Frame(frame_usu_form, bg=CORES["bg_white"])
     frame_usu_btn.grid(row=4, column=0, columnspan=4, sticky='w', pady=12)
-    criar_botao_arredondado(
-    frame_usu_btn,
-    "Salvar",
-    salvar_usuario,
-    bg=CORES["success"],
-    fg="white",
-    width=120,
-    height=36,
-    radius=10,
-    font=("Arial", 10, "bold")
-).pack(side="left", padx=(0, 8))
-    
-    criar_botao_arredondado(
-    frame_usu_btn,
-    "Limpar",
-    limpar_form_usuario,
-    bg="#64748b",
-    fg="white",
-    width=110,
-    height=36,
-    radius=10,
-    font=("Arial", 10)
-).pack(side="left", padx=4)
-    
+    tk.Button(frame_usu_btn, text="Salvar", command=salvar_usuario, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=(0, 8)), 
+    tk.Button(frame_usu_btn, text="Limpar", command=limpar_form_usuario, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=4)
     frame_usu_tree = tk.Frame(tela_usuarios, bg=CORES["bg_white"], bd=1, relief='solid')
     frame_usu_tree.pack(fill='both', expand=True, padx=20, pady=10)
     cols_usu = ("ID","Nome","Login","E-mail","Perfil","Data Cadastro BR","Sel")
