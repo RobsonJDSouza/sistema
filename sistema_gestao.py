@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import sqlite3
 import os
 import csv
@@ -355,14 +352,14 @@ def perguntar_backup_ao_sair(titulo="Sair"):
             mostrar_erro("Não foi possível salvar o backup no local escolhido.")
 
     tk.Button(
-        body, text="Sim — escolher onde salvar...",
+        body, text="Sim — Escolher onde salvar",
         command=backup_escolher_local,
         bg=CORES["primary"], fg="white", font=("Arial", 10, "bold"),
         bd=0, padx=12, pady=8, cursor="hand2",
     ).pack(fill="x", pady=4)
 
     tk.Button(
-        body, text="Não — sair sem backup",
+        body, text="Não — Sair sem backup",
         command=lambda: fechar("sem_backup"),
         bg="#64748b", fg="white", font=("Arial", 10, "bold"),
         bd=0, padx=12, pady=8, cursor="hand2",
@@ -1666,7 +1663,7 @@ def obter_ids_selecionados(tree):
             pass
     return ids
 
-def criar_barra_selecao_multipla(parent, tree, on_excluir_ids=None, texto_botao="🗑️ Excluir selecionados", mostrar_excluir=True):
+def criar_barra_selecao_multipla(parent, tree, on_excluir_ids=None, texto_botao="Excluir selecionados", mostrar_excluir=True):
     """Barra com 'Marcar todos'. Botão excluir opcional (em CP/CR já existe botão abaixo)."""
     barra = tk.Frame(parent, bg=CORES["bg_light"])
     var_todos = tk.BooleanVar(value=False)
@@ -1756,9 +1753,9 @@ def criar_barra_lixeira(parent, tree, tabela):
 
     tk.Checkbutton(barra, text="Marcar todos", variable=var_todos, command=_marcar_todos,
                    bg=CORES["bg_light"], font=('Arial', 9)).pack(side='left', padx=(0, 14))
-    tk.Button(barra, text="♻️ Restaurar selecionados", command=_restaurar, bg=CORES["success"], fg="white",
+    tk.Button(barra, text="Restaurar selecionados", command=_restaurar, bg=CORES["success"], fg="white",
               bd=0, padx=10, pady=4, font=('Arial', 9, 'bold'), cursor='hand2').pack(side='left', padx=4)
-    tk.Button(barra, text="❌ Excluir definitivo", command=_excluir_def, bg=CORES["danger"], fg="white",
+    tk.Button(barra, text="Excluir definitivo", command=_excluir_def, bg=CORES["danger"], fg="white",
               bd=0, padx=10, pady=4, font=('Arial', 9, 'bold'), cursor='hand2').pack(side='left', padx=4)
     return barra
 
@@ -2693,6 +2690,8 @@ def atualizar_carrinho_tree():
         total += sub
         # desconto rateado por item
         desc_item = (sub / total_bruto * desc_global) if total_bruto > 0 and desc_global > 0 else 0.0
+        # acréscimo (taxa do cartão) rateado por item, só aparece se houver taxa
+        acresc_item = (sub / total_bruto * valor_taxa) if total_bruto > 0 and valor_taxa > 0 else 0.0
         # subtotal com desconto/taxa (fator); preço unitário sempre BRUTO
         sub_exib = sub * fator if total_bruto > 0 else sub
         tree_venda_carrinho.insert(
@@ -2703,6 +2702,7 @@ def atualizar_carrinho_tree():
                 item['quantidade'],
                 formatar_moeda(preco),
                 formatar_moeda(desc_item),
+                formatar_moeda(acresc_item) if acresc_item > 0 else "-",
                 formatar_moeda(sub_exib),
             ),
         )
@@ -3006,7 +3006,7 @@ def abrir_modal_parcelas_cartao():
     header = tk.Frame(modal, bg="#f59e0b", height=70)
     header.pack(fill='x', side='top')
     header.pack_propagate(False)
-    tk.Label(header, text="CARTÃO DE CRÉDITO - Parcelamento em até 12x", bg="#f59e0b", fg="white", font=('Arial', 13, 'bold')).pack(pady=(10, 0))
+    tk.Label(header, text="Cartão de Crédito - Parcelar em até 12x", bg="#f59e0b", fg="white", font=('Arial', 13, 'bold')).pack(pady=(10, 0))
     tk.Label(header, text=f"Total da venda: {formatar_moeda(total_final)}", bg="#f59e0b", fg="white", font=('Arial', 11, 'bold')).pack()
 
     # ---------------- Rodapé (botões) ----------------
@@ -3173,48 +3173,27 @@ def abrir_modal_parcelas_cartao():
             atualizar_calculo_cartao()
         return parc, taxa, venc_br_modal, total_com_taxa, valor_parcela
 
-    def confirmar():
-        """Aplica as parcelas no PDV e volta para a tela de venda."""
-        try:
-            res = _aplicar_no_pdv()
-            if res is None:
-                return
-            parc, taxa, venc_br_modal, total_com_taxa, valor_parcela = res
-            fechar_modal()
-            mostrar_sucesso(
-                f"Parcelas configuradas!\n\n{parc}x de {formatar_moeda(valor_parcela)}\n"
-                f"Total com taxa: {formatar_moeda(total_com_taxa)}\n1ª parcela: {venc_br_modal}\n\n"
-                "Clique em FINALIZAR VENDA para concluir.",
-                "Parcelas Configuradas",
-            )
-        except Exception as e:
-            mostrar_erro(f"Erro ao confirmar: {e}")
-
-    def confirmar_e_finalizar():
-        """Aplica as parcelas no PDV e já finaliza a venda."""
+    def _aplicar_e_fechar():
+        """Aplica as parcelas no PDV e fecha o modal — a venda só é finalizada
+        quando o usuário clicar no botão FINALIZAR VENDA da tela principal."""
         try:
             res = _aplicar_no_pdv()
             if res is None:
                 return
             fechar_modal()
-            finalizar_venda()
         except Exception as e:
-            mostrar_erro(f"Erro ao finalizar: {e}")
+            mostrar_erro(f"Erro ao aplicar parcelas: {e}")
 
     frame_btn = tk.Frame(footer, bg="#f8fafc")
     frame_btn.pack(fill='x', padx=20, pady=(10, 4))
     tk.Button(frame_btn, text="Cancelar", command=fechar_modal, bg="#64748b", fg="white",
-              font=('Arial', 10, 'bold'), bd=0, padx=18, pady=8, cursor='hand2').pack(side='left')
-    tk.Button(frame_btn, text="FINALIZAR VENDA", command=confirmar_e_finalizar, bg=CORES["success"], fg="white",
-              font=('Arial', 11, 'bold'), bd=0, padx=22, pady=8, cursor='hand2').pack(side='right')
-    tk.Button(frame_btn, text="Confirmar Parcelas", command=confirmar, bg=CORES["primary"], fg="white",
-              font=('Arial', 10, 'bold'), bd=0, padx=18, pady=8, cursor='hand2').pack(side='right', padx=(0, 8))
-    tk.Label(footer,
-             text="Confirmar Parcelas = aplica no PDV e volta à venda   •   FINALIZAR VENDA = aplica e conclui a venda agora",
-             bg="#f8fafc", fg=CORES["text_gray"], font=('Arial', 8), wraplength=580, justify='left').pack(anchor='w', padx=20, pady=(0, 8))
+              font=('Arial', 10, 'bold'), bd=0, padx=22, pady=8, cursor='hand2').pack(side='left')
+    tk.Button(frame_btn, text="Aplicar Parcelas", command=_aplicar_e_fechar, bg=CORES["success"], fg="white",
+              font=('Arial', 11, 'bold'), bd=0, padx=28, pady=8, cursor='hand2').pack(side='right')
+    #tk.Label(footer, text="Escolha as parcelas e o acréscimo, clique em Aplicar Parcelas e depois finalize a venda pelo botão principal.", bg="#f8fafc", fg=CORES["text_gray"], font=('Arial', 8)).pack(anchor='w', padx=20, pady=(0, 8))
 
     modal.bind('<Escape>', lambda e: fechar_modal())
-    modal.bind('<Return>', lambda e: confirmar())
+    modal.bind('<Return>', lambda e: _aplicar_e_fechar())
     modal.protocol("WM_DELETE_WINDOW", fechar_modal)
     try:
         combo_modal_parcelas.focus_set()
@@ -3226,75 +3205,10 @@ def on_forma_pagamento_change(event=None):
     try:
         forma = combo_venda_forma.get().strip()
         if forma == "Cartão Crédito":
-            try:
-                frame_cartao_credito.pack(fill='x', padx=20, pady=8, before=frame_venda_botoes)
-            except Exception:
-                frame_cartao_credito.pack(fill='x', padx=20, pady=8, before=frame_venda_carrinho)
-            atualizar_carrinho_tree()
-        else:
-            try:
-                frame_cartao_credito.pack_forget()
-            except Exception:
-                pass
-            atualizar_carrinho_tree()
+            abrir_modal_parcelas_cartao()
+        atualizar_carrinho_tree()
     except Exception as e:
         print("Erro on_forma", e)
-
-def on_forma_cr_change(event=None):
-    try:
-        forma = combo_cr_forma.get().strip()
-        if forma == "Cartão Crédito":
-            frame_cr_cartao.pack(fill='x', padx=10, pady=8)
-            atualizar_calculo_cr_parcelas()
-        else:
-            frame_cr_cartao.pack_forget()
-    except:
-        pass
-
-def on_forma_cp_change(event=None):
-    try:
-        forma = combo_cp_forma.get().strip()
-        if forma == "Cartão Crédito":
-            frame_cp_cartao.pack(fill='x', padx=10, pady=8)
-            atualizar_calculo_cp_parcelas()
-        else:
-            frame_cp_cartao.pack_forget()
-    except:
-        pass
-
-def atualizar_calculo_cr_parcelas():
-    try:
-        forma = combo_cr_forma.get().strip()
-        if forma != "Cartão Crédito":
-            return
-        valor_str = entry_cr_valor.get().strip()
-        if not valor_str:
-            return
-        valor = float(valor_str.replace(",", ".") or 0)
-        parcelas = int(combo_cr_parcelas.get() or 1)
-        taxa = float(entry_cr_taxa.get().replace(",", ".") or 0)
-        total_com_taxa = valor * (1 + taxa/100)
-        valor_parcela = total_com_taxa / parcelas if parcelas else valor
-        lbl_cr_parcela_info.config(text=f"Total com taxa: {formatar_moeda(total_com_taxa)} | {parcelas}x de {formatar_moeda(valor_parcela)}")
-    except:
-        pass
-
-def atualizar_calculo_cp_parcelas():
-    try:
-        forma = combo_cp_forma.get().strip()
-        if forma != "Cartão Crédito":
-            return
-        valor_str = entry_cp_valor.get().strip()
-        if not valor_str:
-            return
-        valor = float(valor_str.replace(",", ".") or 0)
-        parcelas = int(combo_cp_parcelas.get() or 1)
-        taxa = float(entry_cp_taxa.get().replace(",", ".") or 0)
-        total_com_taxa = valor * (1 + taxa/100)
-        valor_parcela = total_com_taxa / parcelas if parcelas else valor
-        lbl_cp_parcela_info.config(text=f"Total com taxa: {formatar_moeda(total_com_taxa)} | {parcelas}x de {formatar_moeda(valor_parcela)}")
-    except:
-        pass
 
 def finalizar_venda():
     global carrinho_venda
@@ -5397,7 +5311,7 @@ def tela_login():
     frame_user = tk.Frame(frame_inner, bg="#f1f5f9", highlightbackground="#cbd5e1", highlightthickness=1)
     frame_user.pack(fill="x", pady=(4, 12), ipady=2)
     
-    tk.Label(frame_user, text="👤", font=("Arial", 12), bg="#f1f5f9", fg="#64748b").pack(side="left", padx=(10, 6))
+    #tk.Label(frame_user, text="👤", font=("Arial", 12), bg="#f1f5f9", fg="#64748b").pack(side="left", padx=(10, 6))
     entry_login = tk.Entry(frame_user, font=("Arial", 12), bd=0, bg="#f1f5f9", fg="#1e293b", insertbackground="#1e293b")
     entry_login.pack(side="left", fill="x", expand=True, ipady=8, padx=(0, 10))
     
@@ -5407,7 +5321,7 @@ def tela_login():
     frame_pass = tk.Frame(frame_inner, bg="#f1f5f9", highlightbackground="#cbd5e1", highlightthickness=1)
     frame_pass.pack(fill="x", pady=(4, 6), ipady=2)
     
-    tk.Label(frame_pass, text="🔒", font=("Arial", 12), bg="#f1f5f9", fg="#64748b").pack(side="left", padx=(10, 6))
+    #tk.Label(frame_pass, text="🔒", font=("Arial", 12), bg="#f1f5f9", fg="#64748b").pack(side="left", padx=(10, 6))
     entry_senha = tk.Entry(frame_pass, font=("Arial", 12), bd=0, bg="#f1f5f9", fg="#1e293b", show="•", insertbackground="#1e293b")
     entry_senha.pack(side="left", fill="x", expand=True, ipady=8)
     
@@ -5540,10 +5454,9 @@ def tela_login():
                            bg="white", fg=AZUL, cursor="hand2")
     lbl_esqueci.pack(pady=(4, 10))
     lbl_esqueci.bind("<Button-1>", lambda e: abrir_recuperar_senha())
-    
+
     # Dica discreta
-    tk.Label(frame_inner, text="admin / admin123  •  operador / operador123",
-             font=("Arial", 8), bg="white", fg="#94a3b8").pack(pady=(8, 0))
+    #tk.Label(frame_inner, text="admin / admin123  •  operador / operador123",font=("Arial", 8), bg="white", fg="#94a3b8").pack(pady=(8, 0))
     
     entry_senha.bind("<Return>", fazer_login)
     entry_login.bind("<Return>", lambda e: entry_senha.focus())
@@ -5657,13 +5570,13 @@ def criar_interface():
     top_bar = tk.Frame(root, bg=CORES["bg_top"], height=60)
     top_bar.pack(fill='x', side='top')
     top_bar.pack_propagate(False)
-    tk.Label(top_bar, text="🏢 Chaveiro Mestre", bg=CORES["bg_top"], fg="white", font=('Arial', 14, 'bold')).pack(side='left', padx=20, pady=15)
+    tk.Label(top_bar, text="Chaveiro Mestre", bg=CORES["bg_top"], fg="white", font=('Arial', 14, 'bold')).pack(side='left', padx=20, pady=15)
     frame_user_top = tk.Frame(top_bar, bg=CORES["bg_top"])
     frame_user_top.pack(side='right', padx=20, pady=10)
     perfil_cor = CORES["success"] if eh_admin() else CORES["warning"]
-    tk.Label(frame_user_top, text=f"👤 {usuario_logado['nome']}", bg=CORES["bg_top"], fg="white", font=('Arial', 10, 'bold')).pack(side='left', padx=5)
+    tk.Label(frame_user_top, text=f"{usuario_logado['nome']}", bg=CORES["bg_top"], fg="white", font=('Arial', 10, 'bold')).pack(side='left', padx=5)
     tk.Label(frame_user_top, text=f"{usuario_logado['perfil'].upper()}", bg=perfil_cor, fg="white", font=('Arial', 8, 'bold'), padx=8, pady=2).pack(side='left', padx=5)
-    tk.Label(frame_user_top, text=f"🕒 {hoje_br_completo()}", bg=CORES["bg_top"], fg="#94a3b8", font=('Arial', 9)).pack(side='left', padx=15)
+    tk.Label(frame_user_top, text=f"{hoje_br_completo()}", bg=CORES["bg_top"], fg="#94a3b8", font=('Arial', 9)).pack(side='left', padx=15)
     def logout():
         res = perguntar_backup_ao_sair("Sair / Logout")
         if res.get("acao") == "cancel":
@@ -5697,7 +5610,7 @@ def criar_interface():
     except Exception:
         pass
 
-    tk.Button(frame_user_top, text="🚪 Sair", command=logout, bg=CORES["danger"], fg="white", font=('Arial', 9, 'bold'), bd=0, padx=12, pady=4, cursor='hand2').pack(side='left', padx=10)
+    tk.Button(frame_user_top, text="Sair", command=logout, bg=CORES["danger"], fg="white", font=('Arial', 9, 'bold'), bd=0, padx=12, pady=4, cursor='hand2').pack(side='left', padx=10)
     
     container = tk.Frame(root, bg=CORES["bg_light"])
     container.pack(fill='both', expand=True)
@@ -5917,16 +5830,16 @@ def criar_interface():
         lbl_val.pack(anchor='w', pady=(8,0), fill='x')
         parent.grid_columnconfigure(col, weight=1)
         return lbl_val
-    lbl_saldo_val = criar_card(frame_cards, "💰 SALDO CAIXA", 0, 0, CORES["card_green"], "#15803d")
-    lbl_vendas_hoje_val = criar_card(frame_cards, "🛒 VENDAS HOJE", 0, 1, CORES["card_blue"], "#1d4ed8")
-    lbl_receber_val = criar_card(frame_cards, "📥 A RECEBER", 0, 2, CORES["card_yellow"], "#b45309")
-    lbl_pagar_val = criar_card(frame_cards, "📤 A PAGAR", 0, 3, CORES["card_red"], "#b91c1c")
+    lbl_saldo_val = criar_card(frame_cards, "SALDO CAIXA", 0, 0, CORES["card_green"], "#15803d")
+    lbl_vendas_hoje_val = criar_card(frame_cards, "VENDAS HOJE", 0, 1, CORES["card_blue"], "#1d4ed8")
+    lbl_receber_val = criar_card(frame_cards, "A RECEBER", 0, 2, CORES["card_yellow"], "#b45309")
+    lbl_pagar_val = criar_card(frame_cards, "A PAGAR", 0, 3, CORES["card_red"], "#b91c1c")
     frame_cards2 = tk.Frame(tela_dashboard, bg=CORES["bg_light"])
     frame_cards2.pack(fill='x', padx=20, pady=5)
-    lbl_estoque_baixo_val = criar_card(frame_cards2, "⚠️ ESTOQUE BAIXO", 0, 0, CORES["card_orange"], "#c2410c")
-    lbl_clientes_val = criar_card(frame_cards2, "👥 CLIENTES", 0, 1, CORES["card_purple"], "#7c3aed")
-    lbl_produtos_val = criar_card(frame_cards2, "📦 PRODUTOS", 0, 2, "#ccfbf1", "#0f766e")
-    frame_dash_vendas = tk.LabelFrame(tela_dashboard, text="📋 Últimas Vendas", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], fg=CORES["text_dark"], bd=1, relief='solid')
+    lbl_estoque_baixo_val = criar_card(frame_cards2, "ESTOQUE BAIXO", 0, 0, CORES["card_orange"], "#c2410c")
+    lbl_clientes_val = criar_card(frame_cards2, "CLIENTES", 0, 1, CORES["card_purple"], "#7c3aed")
+    lbl_produtos_val = criar_card(frame_cards2, "PRODUTOS", 0, 2, "#ccfbf1", "#0f766e")
+    frame_dash_vendas = tk.LabelFrame(tela_dashboard, text="Últimas Vendas", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], fg=CORES["text_dark"], bd=1, relief='solid')
     frame_dash_vendas.pack(fill='both', expand=True, padx=20, pady=10)
     cols_dash = ("ID","Data","Cliente","Total","Forma","Status")
     tree_dashboard_vendas = ttk.Treeview(frame_dash_vendas, columns=cols_dash, show='headings', height=12)
@@ -5992,11 +5905,11 @@ def criar_interface():
     # Botões
     frame_cli_btn = tk.Frame(frame_cli_form, bg=CORES["bg_white"])
     frame_cli_btn.grid(row=4, column=0, columnspan=6, pady=12, sticky='w')
-    tk.Button(frame_cli_btn, text="💾 Salvar", command=salvar_cliente, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=5)
-    tk.Button(frame_cli_btn, text="🧹 Limpar", command=limpar_form_cliente, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=5)
+    tk.Button(frame_cli_btn, text="Salvar", command=salvar_cliente, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=5)
+    tk.Button(frame_cli_btn, text="Limpar", command=limpar_form_cliente, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=5)
     frame_cli_busca = tk.Frame(tela_clientes, bg=CORES["bg_light"])
     frame_cli_busca.pack(fill='x', padx=20, pady=5)
-    tk.Label(frame_cli_busca, text="🔍 Buscar (digite 3+ letras para ver opções):", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
+    tk.Label(frame_cli_busca, text="🔍 Buscar (digite o cliente):", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
     entry_busca_cliente = tk.Entry(frame_cli_busca, width=40, font=('Arial', 10))
     entry_busca_cliente.pack(side='left', padx=10, ipady=3)
     frame_cli_tree = tk.Frame(tela_clientes, bg=CORES["bg_white"], bd=1, relief='solid')
@@ -6022,7 +5935,7 @@ def criar_interface():
         fill='x', padx=20, pady=(0, 6), before=frame_cli_tree)
     
     # FORNECEDORES — labels alinhadas
-    frame_forn_form = tk.LabelFrame(tela_fornecedores, text="🏭 Cadastro de Fornecedor (Nome, CNPJ/CPF e Telefone obrigatórios)", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
+    frame_forn_form = tk.LabelFrame(tela_fornecedores, text="Cadastro de Fornecedor", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
     frame_forn_form.pack(fill='x', padx=20, pady=10)
     def _lbl_forn(txt, r, c, bold=False):
         fnt = ('Arial', 9, 'bold') if bold else ('Arial', 9)
@@ -6068,11 +5981,11 @@ def criar_interface():
     entry_forn_cidade.grid(row=3, column=3, columnspan=2, padx=4, pady=4, sticky='ew')
     frame_forn_btn = tk.Frame(frame_forn_form, bg=CORES["bg_white"])
     frame_forn_btn.grid(row=4, column=0, columnspan=6, pady=12, sticky='w')
-    tk.Button(frame_forn_btn, text="💾 Salvar", command=salvar_fornecedor, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=5)
-    tk.Button(frame_forn_btn, text="🧹 Limpar", command=limpar_form_fornecedor, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=5)
+    tk.Button(frame_forn_btn, text="Salvar", command=salvar_fornecedor, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=5)
+    tk.Button(frame_forn_btn, text="Limpar", command=limpar_form_fornecedor, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=5)
     frame_forn_busca = tk.Frame(tela_fornecedores, bg=CORES["bg_light"])
     frame_forn_busca.pack(fill='x', padx=20, pady=5)
-    tk.Label(frame_forn_busca, text="🔍 Buscar (digite 3+ letras para ver opções):", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
+    tk.Label(frame_forn_busca, text="🔍 Buscar (digite o fornecedor):", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
     entry_busca_forn = tk.Entry(frame_forn_busca, width=40, font=('Arial', 10))
     entry_busca_forn.pack(side='left', padx=10, ipady=3)
     frame_forn_tree = tk.Frame(tela_fornecedores, bg=CORES["bg_white"], bd=1, relief='solid')
@@ -6098,7 +6011,7 @@ def criar_interface():
         fill='x', padx=20, pady=(0, 6), before=frame_forn_tree)
     
     # PRODUTOS
-    frame_prod_form = tk.LabelFrame(tela_produtos, text="📦 Cadastro de Produto (Todos com * são obrigatórios)", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
+    frame_prod_form = tk.LabelFrame(tela_produtos, text="Cadastro de Produto", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
     frame_prod_form.pack(fill='x', padx=20, pady=10)
     def _lbl_prod(txt, r, c, bold=False):
         fnt = ('Arial', 9, 'bold') if bold else ('Arial', 9)
@@ -6134,11 +6047,11 @@ def criar_interface():
     entry_prod_desc.grid(row=2, column=4, columnspan=4, padx=4, pady=4, sticky='w')
     frame_prod_btn = tk.Frame(frame_prod_form, bg=CORES["bg_white"])
     frame_prod_btn.grid(row=3, column=0, columnspan=8, pady=12, sticky='w')
-    tk.Button(frame_prod_btn, text="💾 Salvar", command=salvar_produto, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=5)
-    tk.Button(frame_prod_btn, text="🧹 Limpar", command=limpar_form_produto, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=5)
+    tk.Button(frame_prod_btn, text="Salvar", command=salvar_produto, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=5)
+    tk.Button(frame_prod_btn, text="Limpar", command=limpar_form_produto, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=5)
     frame_prod_busca = tk.Frame(tela_produtos, bg=CORES["bg_light"])
     frame_prod_busca.pack(fill='x', padx=20, pady=5)
-    tk.Label(frame_prod_busca, text="🔍 Buscar (digite 3+ letras para ver opções):", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
+    tk.Label(frame_prod_busca, text="🔍 Buscar (digite o produto):", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
     entry_busca_prod = tk.Entry(frame_prod_busca, width=40, font=('Arial', 10))
     entry_busca_prod.pack(side='left', padx=10, ipady=3)
     frame_prod_tree = tk.Frame(tela_produtos, bg=CORES["bg_white"], bd=1, relief='solid')
@@ -6170,7 +6083,7 @@ def criar_interface():
     # ESTOQUE
     frame_est_top = tk.Frame(tela_estoque, bg=CORES["bg_light"])
     frame_est_top.pack(fill='x', padx=20, pady=10)
-    frame_est_mov = tk.LabelFrame(frame_est_top, text="📦 Movimentação Manual de Estoque", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
+    frame_est_mov = tk.LabelFrame(frame_est_top, text="Movimentação Manual de Estoque", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
     frame_est_mov.pack(side='left', fill='x', expand=True, padx=5)
     tk.Label(frame_est_mov, text="Produto* (digite para buscar):", bg=CORES["bg_white"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).grid(row=0,column=0, sticky='w')
     combo_est_prod = ttk.Combobox(frame_est_mov, width=40)
@@ -6188,12 +6101,12 @@ def criar_interface():
     tk.Button(frame_est_mov, text="✅ Movimentar", command=movimentar_estoque, bg=CORES["primary"], fg="white", font=('Arial', 9, 'bold'), bd=0, padx=12, pady=5).grid(row=1,column=4, padx=10)
     frame_est_filtro = tk.Frame(tela_estoque, bg=CORES["bg_light"])
     frame_est_filtro.pack(fill='x', padx=20, pady=5)
-    tk.Label(frame_est_filtro, text="🔍 Filtrar movimentação (3+ letras = opções):", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
+    tk.Label(frame_est_filtro, text="🔍 Filtrar movimentação", bg=CORES["bg_light"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).pack(side='left')
     entry_est_filtro_prod = tk.Entry(frame_est_filtro, width=30)
     entry_est_filtro_prod.pack(side='left', padx=10, ipady=3)
     paned_est = tk.PanedWindow(tela_estoque, orient='vertical', bg=CORES["bg_light"])
     paned_est.pack(fill='both', expand=True, padx=20, pady=5)
-    frame_est_tree = tk.LabelFrame(paned_est, text="📊 Saldo Atual de Estoque", font=('Arial', 10, 'bold'), bg=CORES["bg_white"])
+    frame_est_tree = tk.LabelFrame(paned_est, text="Saldo Atual de Estoque", font=('Arial', 10, 'bold'), bg=CORES["bg_white"])
     paned_est.add(frame_est_tree, height=250)
     cols_est = ("ID", "Código", "Nome", "Atual", "Mínimo", "Status")
     tree_estoque = ttk.Treeview(frame_est_tree, columns=cols_est, show='headings')
@@ -6209,7 +6122,7 @@ def criar_interface():
     tree_estoque.tag_configure('baixo', background='#fef3c7')
     tree_estoque.tag_configure('zerado', background='#fee2e2')
     criar_controle_paginacao(frame_est_tree, "estoque", bg=CORES["bg_white"]).pack(fill='x', padx=5, pady=(0, 4))
-    frame_mov_tree = tk.LabelFrame(paned_est, text="📜 Histórico de Movimentações (200 últimas)", font=('Arial', 10, 'bold'), bg=CORES["bg_white"])
+    frame_mov_tree = tk.LabelFrame(paned_est, text="Histórico de Movimentações (200 últimas)", font=('Arial', 10, 'bold'), bg=CORES["bg_white"])
     paned_est.add(frame_mov_tree, height=250)
     cols_mov = ("Data (BR)", "Produto","Tipo","Quantidade","Motivo")
     tree_mov_estoque = ttk.Treeview(frame_mov_tree, columns=cols_mov, show='headings')
@@ -6223,51 +6136,36 @@ def criar_interface():
     sb_mov.pack(side='right', fill='y')
     criar_controle_paginacao(frame_mov_tree, "mov_estoque", bg=CORES["bg_white"]).pack(fill='x', padx=5, pady=(0, 4))
     
-    # VENDAS - FRAME CARTAO CREDITO CRIADO ANTES DAS FUNÇÕES QUE USAM
+    # VENDAS - DADOS DA VENDA
     frame_venda_top = tk.Frame(tela_vendas, bg=CORES["bg_light"])
-    frame_venda_top.pack(fill='x', padx=20, pady=10)
-    frame_venda_cli = tk.LabelFrame(frame_venda_top, text="🛒 Dados da Venda", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
-    frame_venda_cli.pack(side='left', fill='x', expand=True, padx=5)
-    tk.Label(frame_venda_cli, text="Cliente* (digite para buscar):", bg=CORES["bg_white"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).grid(row=0,column=0, sticky='w')
-    combo_venda_cliente = ttk.Combobox(frame_venda_cli, width=32)
-    combo_venda_cliente.grid(row=0,column=1, padx=5, pady=4)
-    combo_venda_cliente.set("0 - Consumidor Final")
-    tk.Label(frame_venda_cli, text="Forma Pgto*:", bg=CORES["bg_white"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).grid(row=0,column=2, sticky='w')
-    combo_venda_forma = ttk.Combobox(frame_venda_cli, width=16, values=["Dinheiro","PIX","Cartão Débito","Cartão Crédito"])
-    combo_venda_forma.grid(row=0,column=3, padx=5, pady=4)
-    combo_venda_forma.set("Dinheiro")
-    tk.Label(frame_venda_cli, text="Venc. 1ª parcela* dd/mm/aaaa:", bg=CORES["bg_white"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).grid(row=1,column=0, sticky='w')
-    entry_venda_venc = tk.Entry(frame_venda_cli, width=15)
-    entry_venda_venc.grid(row=1,column=1, padx=5, pady=4, sticky='w')
-    entry_venda_venc.insert(0, hoje_br())
-    ativar_seletor_data(entry_venda_venc)
-    tk.Label(frame_venda_cli, text="Obs:", bg=CORES["bg_white"]).grid(row=2,column=0, sticky='w')
-    entry_venda_obs = tk.Entry(frame_venda_cli, width=55)
-    entry_venda_obs.grid(row=2,column=1,columnspan=3, padx=5, pady=4, sticky='w')
-    frame_venda_total = tk.Frame(frame_venda_top, bg=CORES["card_green"], bd=0, relief='flat')
-    frame_venda_total.pack(side='right', padx=15, ipadx=25, ipady=15)
-    lbl_venda_total_titulo = tk.Label(frame_venda_total, text="TOTAL DA VENDA", bg=CORES["card_green"], font=('Arial', 10, 'bold'), fg="#15803d")
-    lbl_venda_total_titulo.pack()
-    lbl_venda_total = tk.Label(frame_venda_total, text="R$ 0,00", bg=CORES["card_green"], font=('Arial', 20, 'bold'), fg="#15803d")
-    lbl_venda_total.pack()
-    lbl_venda_total_sub = tk.Label(frame_venda_total, text="", bg=CORES["card_green"], font=('Arial', 8), fg="#166534")
-    lbl_venda_total_sub.pack()
-    
-    frame_venda_add = tk.LabelFrame(tela_vendas, text="➕ Adicionar Produto (digite para buscar) - *obrigatório", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=12)
-    frame_venda_add.pack(fill='x', padx=20, pady=5)
-    tk.Label(frame_venda_add, text="Produto*:", bg=CORES["bg_white"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).grid(row=0,column=0, sticky='w')
-    combo_venda_prod = ttk.Combobox(frame_venda_add, width=50)
-    combo_venda_prod.grid(row=0,column=1, padx=5, pady=4)
-    tk.Label(frame_venda_add, text="Qtd*:", bg=CORES["bg_white"], fg=CORES["text_dark"]).grid(row=0,column=2, sticky='w')
-    entry_venda_qtd = tk.Entry(frame_venda_add, width=8)
-    entry_venda_qtd.grid(row=0,column=3, padx=5, pady=4)
-    entry_venda_qtd.insert(0, "1")
-    tk.Label(frame_venda_add, text="Desconto R$:", bg=CORES["bg_white"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).grid(row=0,column=4, sticky='w', padx=(10, 0))
-    entry_venda_desc = tk.Entry(frame_venda_add, width=10)
-    entry_venda_desc.grid(row=0,column=5, padx=5, pady=4)
-    entry_venda_desc.insert(0, "0")
+    frame_venda_top.pack(fill="x", padx=20, pady=10)
+    frame_venda_cli = tk.LabelFrame(frame_venda_top, text="Dados da Venda", font=("Arial", 11, "bold"), bg=CORES["bg_white"], padx=15, pady=12)
+    frame_venda_cli.pack(fill="x", expand=True, padx=5)
+    tk.Label(frame_venda_cli, text="Cliente:", bg=CORES["bg_white"], font=("Arial",9,"bold"), fg=CORES["text_dark"]).grid(row=0,column=0,sticky="w")
+    combo_venda_cliente = ttk.Combobox(frame_venda_cli, width=28); combo_venda_cliente.grid(row=0,column=1,padx=5,pady=5); combo_venda_cliente.set("0 - Consumidor Final")
+    tk.Label(frame_venda_cli, text="Produto:", bg=CORES["bg_white"], font=("Arial",9,"bold"), fg=CORES["text_dark"]).grid(row=0,column=2,sticky="w")
+    combo_venda_prod = ttk.Combobox(frame_venda_cli, width=38); combo_venda_prod.grid(row=0,column=3,padx=5,pady=5)
+    tk.Label(frame_venda_cli, text="Qtde:", bg=CORES["bg_white"], font=("Arial",9,"bold"), fg=CORES["text_dark"]).grid(row=0,column=4,sticky="w")
+    entry_venda_qtd = tk.Entry(frame_venda_cli, width=7); entry_venda_qtd.grid(row=0,column=5,padx=5,pady=5); entry_venda_qtd.insert(0,"1")
+    tk.Label(frame_venda_cli, text="Desconto R$:", bg=CORES["bg_white"], font=("Arial",9,"bold"), fg=CORES["text_dark"]).grid(row=1,column=0,sticky="w")
+    entry_venda_desc = tk.Entry(frame_venda_cli, width=12); entry_venda_desc.grid(row=1,column=1,padx=5,pady=5,sticky="w"); entry_venda_desc.insert(0,"0")
     entry_venda_desc.bind("<KeyRelease>", lambda e: atualizar_carrinho_tree())
-    
+    lbl_venda_forma = tk.Label(frame_venda_cli, text="Forma de Pagamento:", bg=CORES["bg_white"], font=("Arial",9,"bold"), fg=CORES["text_dark"])
+    lbl_venda_forma.grid(row=1,column=2,sticky="w")
+    combo_venda_forma = ttk.Combobox(frame_venda_cli, width=20, values=["Dinheiro","PIX","Cartão Débito","Cartão Crédito"], state="readonly")
+    combo_venda_forma.grid(row=1,column=3,padx=5,pady=5,sticky="w"); combo_venda_forma.set("Dinheiro")
+    combo_venda_forma.bind("<<ComboboxSelected>>", on_forma_pagamento_change)
+    # Escondido por padrão — só aparece ao clicar no botão "Forma de Pagamento"
+    lbl_venda_forma.grid_remove()
+    combo_venda_forma.grid_remove()
+    # Campos internos, não exibidos no PDV.
+    entry_venda_obs = tk.Entry(root)
+    entry_venda_venc = tk.Entry(root); entry_venda_venc.insert(0, hoje_br())
+    frame_venda_total = tk.Frame(frame_venda_top, bg=CORES["card_green"], bd=0); frame_venda_total.pack(side="right", padx=15, ipadx=20, ipady=10)
+    lbl_venda_total_titulo = tk.Label(frame_venda_total, text="TOTAL DA VENDA", bg=CORES["card_green"], font=("Arial",10,"bold"), fg="#15803d"); lbl_venda_total_titulo.pack()
+    lbl_venda_total = tk.Label(frame_venda_total, text="R$ 0,00", bg=CORES["card_green"], font=("Arial",20,"bold"), fg="#15803d"); lbl_venda_total.pack()
+    lbl_venda_total_sub = tk.Label(frame_venda_total, text="", bg=CORES["card_green"], font=("Arial",8), fg="#166534"); lbl_venda_total_sub.pack()
+    frame_venda_add = tk.Frame(tela_vendas, bg=CORES["bg_white"]); frame_venda_add.pack(fill="x", padx=20, pady=3)
     # Frame Cartão Crédito - criado aqui, antes de ser usado - COM MODAL
     frame_cartao_credito = tk.LabelFrame(
         tela_vendas,
@@ -6308,19 +6206,6 @@ def criar_interface():
 
     combo_tipo_taxa.bind("<<ComboboxSelected>>", _on_tipo_taxa_change)
 
-    tk.Button(
-        frame_cartao_credito,
-        text="Detalhar parcelas / Finalizar",
-        command=abrir_modal_parcelas_cartao,
-        bg=CORES["primary"],
-        fg="white",
-        font=('Arial', 9, 'bold'),
-        bd=0,
-        padx=10,
-        pady=4,
-        cursor='hand2',
-    ).grid(row=0, column=6, padx=(12, 0), pady=3)
-
     # Linha 1: totais
     tk.Label(frame_cartao_credito, text="Total da venda:", bg="#fef3c7", font=('Arial', 9, 'bold')).grid(row=1, column=0, sticky='w', pady=(8, 2))
     lbl_cartao_total_base = tk.Label(frame_cartao_credito, text="R$ 0,00", bg="#fef3c7", font=('Arial', 11, 'bold'), fg=CORES["text_dark"])
@@ -6346,29 +6231,102 @@ def criar_interface():
     ).grid(row=3, column=0, columnspan=7, sticky='w', pady=(4, 0))
     # Não faz pack agora — só aparece ao escolher Cartão Crédito
     
-    # Barra de ações abaixo do frame Cartão de Crédito
+# Adicionar/Remover ficam logo ACIMA do Carrinho
+    frame_venda_botoes_topo = tk.Frame(tela_vendas, bg=CORES["bg_white"])
+    frame_venda_botoes_topo.pack(fill="x", padx=20, pady=(6, 0))
+
+    LARGURA_BOTAO = 22
+
+    tk.Button(
+        frame_venda_botoes_topo, text="Adicionar", command=adicionar_item_venda,
+        bg=CORES["primary"], fg="white", font=('Arial', 10, 'bold'),
+        width=LARGURA_BOTAO, bd=0, pady=8
+    ).grid(row=0, column=0, sticky="w", padx=(0, 6))
+
+    tk.Button(
+        frame_venda_botoes_topo, text="Remover", command=remover_item_venda,
+        bg=CORES["danger"], fg="white", font=('Arial', 10, 'bold'),
+        width=LARGURA_BOTAO, bd=0, pady=8
+    ).grid(row=0, column=1, sticky="w", padx=6)
+
+    def _abrir_opcoes_forma_pagamento():
+        """Abre um modal com as formas de pagamento disponíveis (o campo antigo
+        continua sempre escondido — não volta a aparecer do lado do Desconto)."""
+        modal_fp = tk.Toplevel(root)
+        modal_fp.title("Forma de Pagamento")
+        modal_fp.configure(bg="white")
+        modal_fp.transient(root)
+        modal_fp.grab_set()
+        modal_fp.resizable(False, False)
+        largura, altura = 360, 340
+        try:
+            modal_fp.update_idletasks()
+            x = root.winfo_x() + (root.winfo_width() // 2) - (largura // 2)
+            y = root.winfo_y() + (root.winfo_height() // 2) - (altura // 2)
+            modal_fp.geometry(f"{largura}x{altura}+{x}+{y}")
+        except Exception:
+            modal_fp.geometry(f"{largura}x{altura}")
+
+        def _fechar_modal_fp():
+            try:
+                modal_fp.grab_release()
+            except Exception:
+                pass
+            modal_fp.destroy()
+
+        tk.Label(modal_fp, text="Escolha a forma de pagamento", bg="white",
+                 font=('Arial', 12, 'bold'), fg=CORES["text_dark"]).pack(pady=(20, 4))
+        tk.Label(modal_fp, text=f"Forma atual: {combo_venda_forma.get()}", bg="white",
+                 font=('Arial', 9), fg=CORES["text_gray"]).pack(pady=(0, 12))
+
+        def _escolher(forma):
+            combo_venda_forma.set(forma)
+            _fechar_modal_fp()
+            on_forma_pagamento_change()
+
+        opcoes = [("Dinheiro", CORES["primary"]), ("PIX", CORES["primary"]),
+                  ("Cartão Débito", CORES["info"]), ("Cartão Crédito", CORES["info"])]
+        for nome, cor in opcoes:
+            tk.Button(modal_fp, text=nome, command=lambda n=nome: _escolher(n),
+                      bg=cor, fg="white", font=('Arial', 11, 'bold'),
+                      bd=0, pady=10, width=22, cursor='hand2').pack(pady=6)
+
+        tk.Button(modal_fp, text="Cancelar", command=_fechar_modal_fp,
+                  bg="#64748b", fg="white", font=('Arial', 9), bd=0, padx=14, pady=6,
+                  cursor='hand2').pack(pady=(14, 0))
+
+        modal_fp.bind('<Escape>', lambda e: _fechar_modal_fp())
+        modal_fp.protocol("WM_DELETE_WINDOW", _fechar_modal_fp)
+
+    # Forma de Pagamento e Finalizar Venda ficam no canto inferior esquerdo
     frame_venda_botoes = tk.Frame(tela_vendas, bg=CORES["bg_white"])
-    frame_venda_botoes.pack(fill='x', padx=20, pady=5)
-    tk.Button(frame_venda_botoes, text="➕ Adicionar", command=adicionar_item_venda, bg=CORES["primary"], fg="white", font=('Arial', 9, 'bold'), bd=0, padx=12, pady=5).pack(side='left', padx=(0,8))
-    tk.Button(frame_venda_botoes, text="➖ Remover", command=remover_item_venda, bg=CORES["danger"], fg="white", bd=0, padx=10, pady=5).pack(side='left', padx=8)
-    tk.Button(frame_venda_botoes, text="✅ FINALIZAR VENDA", command=finalizar_venda, bg=CORES["success"], fg="white", font=('Arial', 11, 'bold'), width=18, bd=0, pady=6).pack(side='left', padx=8)
+    frame_venda_botoes.pack(side='bottom', anchor='sw', fill='x', padx=20, pady=10)
+
+    tk.Button(
+        frame_venda_botoes, text="Forma de Pagamento", command=_abrir_opcoes_forma_pagamento,
+        bg=CORES["info"], fg="white", font=('Arial', 10, 'bold'),
+        width=LARGURA_BOTAO, bd=0, pady=8
+    ).grid(row=0, column=0, sticky="w", padx=(0, 6))
+
+    tk.Button(
+        frame_venda_botoes, text="Finalizar Venda", command=finalizar_venda,
+        bg=CORES["success"], fg="white", font=('Arial', 10, 'bold'),
+        width=LARGURA_BOTAO, bd=0, pady=8
+    ).grid(row=0, column=1, sticky="w", padx=6)
     
-    # Agora bind após criar frame
-    combo_venda_forma.bind("<<ComboboxSelected>>", on_forma_pagamento_change)
-    combo_venda_forma.bind("<KeyRelease>", on_forma_pagamento_change)
-    combo_venda_forma.bind("<FocusOut>", on_forma_pagamento_change)
     
-    frame_venda_carrinho = tk.LabelFrame(tela_vendas, text="🛒 Carrinho", font=('Arial', 10, 'bold'), bg=CORES["bg_white"])
+    frame_venda_carrinho = tk.LabelFrame(tela_vendas, text="Carrinho", font=('Arial', 10, 'bold'), bg=CORES["bg_white"])
     frame_venda_carrinho.pack(fill='both', expand=True, padx=20, pady=5)
-    cols_vc = ("ID","Produto","Qtd","Preço Unit","Desconto","Subtotal")
+    cols_vc = ("ID","Produto","Qtd","Preço Unit","Desconto","Acréscimo","Subtotal")
     tree_venda_carrinho = ttk.Treeview(frame_venda_carrinho, columns=cols_vc, show='headings', height=6)
     for c in cols_vc:
         tree_venda_carrinho.heading(c, text=c)
     tree_venda_carrinho.column("ID", width=50)
-    tree_venda_carrinho.column("Produto", width=240)
+    tree_venda_carrinho.column("Produto", width=220)
     tree_venda_carrinho.column("Qtd", width=55)
-    tree_venda_carrinho.column("Preço Unit", width=100)
-    tree_venda_carrinho.column("Desconto", width=100)
+    tree_venda_carrinho.column("Preço Unit", width=95)
+    tree_venda_carrinho.column("Desconto", width=90)
+    tree_venda_carrinho.column("Acréscimo", width=90)
     tree_venda_carrinho.column("Subtotal", width=110)
     tree_venda_carrinho.pack(fill='both', expand=True, side='left', padx=5, pady=5)
     sb_vc = ttk.Scrollbar(frame_venda_carrinho, orient='vertical', command=tree_venda_carrinho.yview)
@@ -6384,13 +6342,13 @@ def criar_interface():
     frame_caixa_top.pack(fill='x', padx=20, pady=10)
     frame_caixa_saldo = tk.Frame(frame_caixa_top, bg=CORES["card_green"], bd=0, relief='flat')
     frame_caixa_saldo.pack(side='left', padx=10, ipadx=25, ipady=15)
-    tk.Label(frame_caixa_saldo, text="💰 SALDO ATUAL DO CAIXA", bg=CORES["card_green"], font=('Arial', 11, 'bold'), fg="#15803d").pack()
+    tk.Label(frame_caixa_saldo, text="SALDO ATUAL DO CAIXA", bg=CORES["card_green"], font=('Arial', 11, 'bold'), fg="#15803d").pack()
     lbl_caixa_saldo = tk.Label(frame_caixa_saldo, text="R$ 0,00", bg=CORES["card_green"], font=('Arial', 22, 'bold'), fg="#15803d")
     lbl_caixa_saldo.pack()
     lbl_caixa_info = tk.Label(frame_caixa_top, text="", font=('Arial', 10), bg=CORES["bg_light"], justify='left', fg=CORES["text_dark"])
     lbl_caixa_info.pack(side='left', padx=20)
     entry_caixa_data = None  # filtro por data removido
-    frame_caixa_manual = tk.LabelFrame(tela_caixa, text="💵 Lançamento Manual (Tipo, Valor e Descrição obrigatórios)", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=12)
+    frame_caixa_manual = tk.LabelFrame(tela_caixa, text="Lançamento Manual", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=12)
     frame_caixa_manual.pack(fill='x', padx=20, pady=5)
     tk.Label(frame_caixa_manual, text="Tipo*:", bg=CORES["bg_white"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).grid(row=0,column=0, sticky='w')
     combo_caixa_tipo = ttk.Combobox(frame_caixa_manual, width=12, values=["entrada","saida"])
@@ -6406,7 +6364,7 @@ def criar_interface():
     combo_caixa_forma = ttk.Combobox(frame_caixa_manual, width=14, values=["Dinheiro","PIX","Cartão","Transferência","Manual"])
     combo_caixa_forma.grid(row=0,column=7, padx=5, pady=4)
     combo_caixa_forma.set("Dinheiro")
-    tk.Button(frame_caixa_manual, text="💾 Lançar", command=lancar_caixa_manual, bg=CORES["primary"], fg="white", font=('Arial', 9, 'bold'), bd=0, padx=12, pady=5).grid(row=0,column=8, padx=10)
+    tk.Button(frame_caixa_manual, text="Lançar", command=lancar_caixa_manual, bg=CORES["primary"], fg="white", font=('Arial', 9, 'bold'), bd=0, padx=12, pady=5).grid(row=0,column=8, padx=10)
     frame_caixa_tree = tk.Frame(tela_caixa, bg=CORES["bg_white"], bd=1, relief='solid')
     frame_caixa_tree.pack(fill='both', expand=True, padx=20, pady=10)
     cols_caixa = ("ID","Data BR","Tipo","Valor","Descrição","Cliente/Fornecedor","Origem","Forma","Sel")
@@ -6467,11 +6425,11 @@ def criar_interface():
     
     frame_cp_acoes = tk.Frame(tela_cp, bg=CORES["bg_light"])
     frame_cp_acoes.pack(fill='x', side='bottom', padx=20, pady=10)
-    tk.Button(frame_cp_acoes, text="✅ Pagar selecionadas", command=pagar_conta, bg=CORES["primary"], fg="white",
+    tk.Button(frame_cp_acoes, text="Pagar selecionadas", command=pagar_conta, bg=CORES["primary"], fg="white",
               font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=(0, 8))
-    tk.Button(frame_cp_acoes, text="❌ Cancelar", command=cancelar_cp, bg=CORES["warning"], fg="white",
+    tk.Button(frame_cp_acoes, text="Cancelar", command=cancelar_cp, bg=CORES["warning"], fg="white",
               font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=8)
-    tk.Button(frame_cp_acoes, text="🗑️ Excluir selecionados", command=excluir_cp_selecionados, bg=CORES["danger"], fg="white",
+    tk.Button(frame_cp_acoes, text="Excluir selecionados", command=excluir_cp_selecionados, bg=CORES["danger"], fg="white",
               font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=8)
 
     notebook_cp = ttk.Notebook(tela_cp)
@@ -6546,11 +6504,11 @@ def criar_interface():
     
     frame_cr_acoes = tk.Frame(tela_cr, bg=CORES["bg_light"])
     frame_cr_acoes.pack(fill='x', side='bottom', padx=20, pady=10)
-    tk.Button(frame_cr_acoes, text="✅ Receber selecionadas", command=receber_conta, bg=CORES["primary"], fg="white",
+    tk.Button(frame_cr_acoes, text="Receber selecionadas", command=receber_conta, bg=CORES["primary"], fg="white",
               font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=(0, 8))
-    tk.Button(frame_cr_acoes, text="❌ Cancelar", command=cancelar_cr, bg=CORES["warning"], fg="white",
+    tk.Button(frame_cr_acoes, text="Cancelar", command=cancelar_cr, bg=CORES["warning"], fg="white",
               font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=8)
-    tk.Button(frame_cr_acoes, text="🗑️ Excluir selecionados", command=excluir_cr_selecionados, bg=CORES["danger"], fg="white",
+    tk.Button(frame_cr_acoes, text="Excluir selecionados", command=excluir_cr_selecionados, bg=CORES["danger"], fg="white",
               font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=8)
 
     notebook_cr = ttk.Notebook(tela_cr)
@@ -6639,18 +6597,20 @@ def criar_interface():
     frame_info.grid(row=2,column=2, padx=10, pady=10, sticky='ew')
     info_text = f"""
 Sistema v3.1 Corrigido
-• Login: {usuario_logado['login']} ({usuario_logado['perfil']})
-• Parcelas cartão crédito fix
-• CHECK constraint migrado
-• Parcelas em todos módulos
-• Validação obrigatória
+Nome do Sistema: Sitema de Gestão
+Autor: Robson Souza
+Ano: 2026
+ 
+Todos os direitos reservados.
+Este código foi desenvolvido por Robson Souza e não pode ser 
+copiado, distribuído ou modificado sem autorização prévia.
 """
     tk.Label(frame_info, text=info_text, bg=CORES["bg_white"], justify='left', font=('Arial', 9), fg=CORES["text_dark"]).pack()
     
     # LIXEIRA
     frame_lixeira_top = tk.Frame(tela_lixeira, bg=CORES["bg_light"])
     frame_lixeira_top.pack(fill='x', padx=20, pady=10)
-    tk.Label(frame_lixeira_top, text="🗑️ LIXEIRA - Itens Excluídos (Somente ADM pode excluir definitivo)", font=('Arial', 14, 'bold'), bg=CORES["bg_light"], fg=CORES["danger"]).pack(side='left')
+    tk.Label(frame_lixeira_top, text="Lixeira - Itens Excluídos", font=('Arial', 14, 'bold'), bg=CORES["bg_light"], fg=CORES["danger"]).pack(side='left')
     notebook_lixeira = ttk.Notebook(tela_lixeira)
     notebook_lixeira.pack(fill='both', expand=True, padx=20, pady=10)
 
@@ -6704,7 +6664,7 @@ Sistema v3.1 Corrigido
     frame_bk_top.pack(fill='x', padx=20, pady=12)
     tk.Label(
         frame_bk_top,
-        text="💾 Backup e Restauração do Sistema",
+        text="Backup e Restauração do Sistema",
         font=('Arial', 14, 'bold'),
         bg=CORES["bg_light"],
         fg=CORES["text_dark"],
@@ -6820,9 +6780,9 @@ Sistema v3.1 Corrigido
     frame_bk_acoes.pack(fill='x', padx=20, pady=8)
     tk.Button(frame_bk_acoes, text="Gerar backup agora", command=_backup_manual,
               bg=CORES["success"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=(0, 8))
-    tk.Button(frame_bk_acoes, text="Exportar backup...", command=_exportar_backup,
+    tk.Button(frame_bk_acoes, text="Exportar backup", command=_exportar_backup,
               bg=CORES["primary"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=4)
-    tk.Button(frame_bk_acoes, text="Importar / Restaurar de arquivo...", command=_restaurar_arquivo,
+    tk.Button(frame_bk_acoes, text="Importar / Restaurar de arquivo", command=_restaurar_arquivo,
               bg=CORES["warning"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=4)
     tk.Button(frame_bk_acoes, text="Atualizar dados", command=_atualizar_dados_manual,
               bg=CORES["purple"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='right')
@@ -6908,7 +6868,7 @@ Sistema v3.1 Corrigido
 
 
     # USUÁRIOS
-    frame_usu_form = tk.LabelFrame(tela_usuarios, text="👤 Cadastro de Usuário (Somente ADM) - Todos obrigatórios", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
+    frame_usu_form = tk.LabelFrame(tela_usuarios, text="Cadastro de Usuário (Somente ADM)", font=('Arial', 11, 'bold'), bg=CORES["bg_white"], padx=15, pady=15)
     frame_usu_form.pack(fill='x', padx=20, pady=10)
     # Labels alinhadas (coluna 0) + campos (coluna 1 e 3)
     lbl_u = dict(bg=CORES["bg_white"], font=('Arial', 9, 'bold'), fg=CORES["text_dark"], anchor='e')
@@ -6938,8 +6898,8 @@ Sistema v3.1 Corrigido
     ).grid(row=3, column=0, columnspan=4, sticky='w', padx=5, pady=(4, 2))
     frame_usu_btn = tk.Frame(frame_usu_form, bg=CORES["bg_white"])
     frame_usu_btn.grid(row=4, column=0, columnspan=4, sticky='w', pady=12)
-    tk.Button(frame_usu_btn, text="💾 Salvar", command=salvar_usuario, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=(0, 8))
-    tk.Button(frame_usu_btn, text="🧹 Limpar", command=limpar_form_usuario, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=4)
+    tk.Button(frame_usu_btn, text="Salvar", command=salvar_usuario, bg=CORES["success"], fg="white", width=14, font=('Arial', 10, 'bold'), bd=0, pady=6).pack(side='left', padx=(0, 8))
+    tk.Button(frame_usu_btn, text="Limpar", command=limpar_form_usuario, bg="#64748b", fg="white", width=12, bd=0, pady=6).pack(side='left', padx=4)
     frame_usu_tree = tk.Frame(tela_usuarios, bg=CORES["bg_white"], bd=1, relief='solid')
     frame_usu_tree.pack(fill='both', expand=True, padx=20, pady=10)
     cols_usu = ("ID","Nome","Login","E-mail","Perfil","Data Cadastro BR","Sel")
