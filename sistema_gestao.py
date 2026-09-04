@@ -41,6 +41,68 @@ def gerar_nome_backup():
         pass
     return f"backup{login}_{ts}.db"
 
+TABELAS_SISTEMA = (
+    "usuarios", "clientes", "fornecedores", "produtos", "vendas",
+    "caixa", "contas_a_pagar", "contas_a_receber",
+)
+
+# Hook preenchido em criar_interface() para atualizar a lista de backups da tela
+_hook_atualizar_lista_backups = None
+
+def _copiar_banco_sqlite(origem, destino):
+    """Copia um banco SQLite de `origem` para `destino`.
+
+    Usa a API de backup do próprio SQLite (cópia consistente, página a página,
+    funciona mesmo com conexões abertas e substitui TODO o conteúdo do destino).
+    Se a API não estiver disponível/falhar, usa cópia simples de arquivo.
+    """
+    try:
+        src = sqlite3.connect(origem, timeout=10)
+        try:
+            if not hasattr(src, "backup"):
+                raise RuntimeError("API de backup indisponível")
+            dst = sqlite3.connect(destino, timeout=10)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        return True
+    except Exception as e:
+        print("Aviso: API de backup do SQLite falhou, usando cópia de arquivo:", e)
+    shutil.copy2(origem, destino)
+    return True
+
+def validar_arquivo_backup(caminho):
+    """Verifica se o arquivo é um banco SQLite íntegro e do sistema.
+    Retorna (ok, mensagem_de_erro)."""
+    try:
+        if not caminho or not os.path.isfile(caminho):
+            return False, "Arquivo não encontrado."
+        if os.path.getsize(caminho) < 100:
+            return False, "Arquivo vazio ou inválido."
+        with open(caminho, "rb") as f:
+            cabecalho = f.read(16)
+        if not cabecalho.startswith(b"SQLite format 3"):
+            return False, "O arquivo selecionado não é um banco de dados SQLite válido (.db)."
+        conn = sqlite3.connect(caminho, timeout=5)
+        try:
+            cur = conn.cursor()
+            cur.execute("PRAGMA quick_check")
+            res = cur.fetchone()
+            if not res or str(res[0]).lower() != "ok":
+                return False, f"Banco de dados do backup está corrompido: {res[0] if res else 'sem resposta'}"
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tabelas = {r[0] for r in cur.fetchall()}
+        finally:
+            conn.close()
+        if not any(t in tabelas for t in TABELAS_SISTEMA):
+            return False, "O arquivo não contém as tabelas do sistema (não é um backup deste programa)."
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
 def fazer_backup(destino=None, silencioso=False):
     """Copia sistema.db para pasta backups/ (ou caminho informado).
     Retorna caminho do arquivo gerado ou None em erro."""
@@ -52,6 +114,12 @@ def fazer_backup(destino=None, silencioso=False):
     try:
         if destino is None:
             destino = os.path.join(BACKUP_DIR, gerar_nome_backup())
+            # Evita sobrescrever um backup gerado no mesmo segundo
+            base, ext = os.path.splitext(destino)
+            n = 1
+            while os.path.exists(destino):
+                destino = f"{base}_{n}{ext}"
+                n += 1
         # Garante que conexões pendentes gravem (sqlite)
         try:
             conn = conectar()
@@ -59,7 +127,13 @@ def fazer_backup(destino=None, silencioso=False):
             conn.close()
         except Exception:
             pass
-        shutil.copy2(DB_PATH, destino)
+        _copiar_banco_sqlite(DB_PATH, destino)
+        # Atualiza a lista da tela de backup (se a interface estiver aberta)
+        try:
+            if callable(_hook_atualizar_lista_backups):
+                _hook_atualizar_lista_backups()
+        except Exception:
+            pass
         if not silencioso:
             mostrar_sucesso(
                 f"Backup realizado com sucesso!\n\nArquivo:\n{destino}",
@@ -84,20 +158,66 @@ def listar_backups_locais():
             try:
                 st = os.stat(caminho)
                 tamanho = st.st_size
+                mtime_num = st.st_mtime
                 mtime = datetime.fromtimestamp(st.st_mtime).strftime("%d/%m/%Y %H:%M:%S")
             except Exception:
-                tamanho, mtime = 0, "-"
-            itens.append((nome, mtime, tamanho, caminho))
+                tamanho, mtime, mtime_num = 0, "-", 0
+            itens.append((nome, mtime, tamanho, caminho, mtime_num))
     except Exception:
         pass
-    itens.sort(key=lambda x: x[1], reverse=True)
-    return itens
+    # Mais recentes primeiro (ordena pela data real, não pelo texto)
+    itens.sort(key=lambda x: x[4], reverse=True)
+    return [(n, m, t, c) for n, m, t, c, _ in itens]
+
+def recarregar_dados_sistema(limpar_formularios=False):
+    """Recarrega TODAS as listas, combos, cards e o dashboard a partir do banco.
+    Usado após restaurar um backup e pelo botão 'Atualizar dados'.
+    Retorna True se tudo foi recarregado sem erro."""
+    if root is None:
+        return False
+    erros = []
+
+    def _tenta(fn):
+        try:
+            fn()
+        except Exception as e:
+            erros.append(f"{getattr(fn, '__name__', fn)}: {e}")
+
+    if limpar_formularios:
+        for fn in (limpar_form_cliente, limpar_form_fornecedor, limpar_form_produto,
+                   limpar_form_usuario, limpar_form_venda):
+            _tenta(fn)
+    for fn in (atualizar_combos, listar_clientes, listar_fornecedores, listar_produtos,
+               listar_estoque, listar_vendas, listar_caixa, listar_contas_pagar,
+               listar_contas_receber, listar_todas_lixeiras, listar_usuarios,
+               atualizar_dashboard):
+        _tenta(fn)
+    if callable(_hook_atualizar_lista_backups):
+        _tenta(_hook_atualizar_lista_backups)
+    try:
+        root.update_idletasks()
+    except Exception:
+        pass
+    if erros:
+        print("Erros ao recarregar dados:", erros)
+    return not erros
 
 def restaurar_backup(caminho_origem):
     """Restaura o banco a partir de um arquivo .db de backup.
-    Cria um backup de segurança do banco atual antes."""
+    Cria um backup de segurança do banco atual antes e, ao final,
+    recarrega todas as telas do sistema com os dados restaurados."""
     if not caminho_origem or not os.path.isfile(caminho_origem):
         mostrar_aviso("Selecione um arquivo de backup válido (.db).")
+        return False
+    try:
+        if os.path.abspath(caminho_origem) == os.path.abspath(DB_PATH):
+            mostrar_aviso("Este arquivo é o próprio banco de dados em uso.\nSelecione um arquivo de backup.")
+            return False
+    except Exception:
+        pass
+    ok, msg = validar_arquivo_backup(caminho_origem)
+    if not ok:
+        mostrar_erro(f"Não foi possível restaurar:\n\n{msg}", "Backup inválido")
         return False
     if not confirmar_moderno(
         "Restaurar backup",
@@ -106,6 +226,7 @@ def restaurar_backup(caminho_origem):
         "Deseja continuar?",
     ):
         return False
+    seguranca = None
     try:
         # Backup de segurança do estado atual
         garantir_pasta_backup()
@@ -120,9 +241,14 @@ def restaurar_backup(caminho_origem):
                 conn.close()
             except Exception:
                 pass
-            shutil.copy2(DB_PATH, seguranca)
-        shutil.copy2(caminho_origem, DB_PATH)
-        # limpa possíveis arquivos WAL/SHM
+            _copiar_banco_sqlite(DB_PATH, seguranca)
+        else:
+            seguranca = None
+
+        # Substitui o banco atual pelo conteúdo do backup
+        _copiar_banco_sqlite(caminho_origem, DB_PATH)
+
+        # limpa possíveis arquivos WAL/SHM antigos
         for ext in ("-wal", "-shm"):
             extra = DB_PATH + ext
             if os.path.exists(extra):
@@ -130,16 +256,28 @@ def restaurar_backup(caminho_origem):
                     os.remove(extra)
                 except Exception:
                     pass
-        mostrar_sucesso(
-            "Backup restaurado com sucesso!\n\n"
-            "Reinicie o sistema (faça logout e login) para carregar os dados restaurados.\n\n"
-            f"Cópia de segurança dos dados anteriores:\n{seguranca}",
-            "Restauração concluída",
-        )
-        return True
     except Exception as e:
         mostrar_erro(f"Falha ao restaurar backup:\n{e}")
         return False
+
+    # Aplica migrações (caso o backup seja de uma versão anterior) e
+    # recarrega TODAS as telas com os dados restaurados.
+    try:
+        init_db()
+    except Exception as e:
+        print("Erro init_db após restauração:", e)
+    tudo_ok = recarregar_dados_sistema(limpar_formularios=True)
+
+    msg = "Backup restaurado com sucesso!\n\n"
+    if tudo_ok:
+        msg += "Todos os dados já foram atualizados nas telas do sistema."
+    else:
+        msg += ("Os dados foram restaurados, mas algumas telas não puderam ser atualizadas.\n"
+                "Use o botão 'Atualizar dados' ou faça logout e login.")
+    if seguranca:
+        msg += f"\n\nCópia de segurança dos dados anteriores:\n{os.path.basename(seguranca)}"
+    mostrar_modal_moderno("Restauração concluída", msg, "sucesso", 0)
+    return True
 
 def perguntar_backup_ao_sair(titulo="Sair"):
     """Pergunta se deseja backup e onde salvar.
@@ -1069,6 +1207,15 @@ def mostrar_modal_moderno(titulo, mensagem, tipo="sucesso", duracao_ms=None):
         duracao_ms = 2500
     if duracao_ms:
         modal.after(duracao_ms, fechar)
+
+    # Ajusta a altura ao conteúdo (mensagens longas não escondem o botão OK)
+    try:
+        modal.update_idletasks()
+        h_req = int(modal.winfo_reqheight())
+        if h_req > 240:
+            modal.geometry(f"460x{h_req}")
+    except Exception:
+        pass
     
     modal.wait_window()
 
@@ -1136,6 +1283,15 @@ def confirmar_moderno(titulo, mensagem):
     
     modal.bind('<Escape>', lambda e: nao())
     modal.bind('<Return>', lambda e: sim())
+
+    # Ajusta a altura ao conteúdo (mensagens longas não escondem os botões)
+    try:
+        modal.update_idletasks()
+        h_req = int(modal.winfo_reqheight())
+        if h_req > 260:
+            modal.geometry(f"480x{h_req}")
+    except Exception:
+        pass
     
     modal.wait_window()
     return result["value"]
@@ -2613,6 +2769,10 @@ def limpar_form_venda():
     except Exception:
         pass
     try:
+        lbl_taxa_campo.config(text="Taxa %:")
+    except Exception:
+        pass
+    try:
         frame_cartao_credito.pack_forget()
     except Exception:
         pass
@@ -2753,93 +2913,140 @@ def atualizar_calculo_cartao():
     except Exception as e:
         print("Erro calculo cartao", e)
 
+def _fmt_num(valor):
+    """Formata número para exibição em campos (3 -> '3', 3.5 -> '3.5', 1500 -> '1500')."""
+    try:
+        txt = f"{float(valor):.4f}".rstrip("0").rstrip(".")
+        return txt if txt and txt != "-0" else "0"
+    except Exception:
+        return str(valor)
+
+
 def abrir_modal_parcelas_cartao():
-    """Modal moderno para escolher parcelas 1-12x com preview das datas"""
+    """Modal para configurar as parcelas do Cartão de Crédito (1-12x), a taxa
+    (% ou R$) e o vencimento da 1ª parcela, com preview das parcelas.
+
+    Os botões de ação ficam em um rodapé fixo (sempre visíveis, independente do
+    tamanho da tela) e há a opção de aplicar a configuração e já FINALIZAR a
+    venda direto do modal.
+    """
     global root, combo_parcelas, entry_taxa, entry_venda_venc, carrinho_venda, entry_venda_desc
     global lbl_cartao_total_com_taxa, lbl_cartao_parcela
-    
+
     if root is None:
         return
-    
-    # Calcular total atual
+
+    # Total atual do carrinho (já com desconto)
     total_bruto = sum(i['subtotal'] for i in carrinho_venda) if carrinho_venda else 0
     try:
-        desconto = float(entry_venda_desc.get().replace(",", ".") or 0)
-    except:
+        desconto = float(str(entry_venda_desc.get()).replace(",", ".") or 0)
+    except Exception:
         desconto = 0
-    total_final = total_bruto - desconto
-    if total_final < 0:
-        total_final = 0
-    
+    total_final = max(0.0, total_bruto - desconto)
+
     if total_final <= 0:
         mostrar_aviso("Adicione produtos ao carrinho antes de configurar parcelas!\n\nTotal atual: R$ 0,00", "Carrinho Vazio")
         return
-    
-    # Pegar valores atuais
+
+    # Valores atuais do PDV
     try:
         parcelas_atual = int(combo_parcelas.get() or 1)
-    except:
+    except Exception:
         parcelas_atual = 1
+    parcelas_atual = min(12, max(1, parcelas_atual))
     try:
-        taxa_atual = float(entry_taxa.get().replace(",", ".") or 0)
-    except:
+        taxa_atual = float(str(entry_taxa.get()).replace(",", ".") or 0)
+    except Exception:
         taxa_atual = 0
-    
+    try:
+        tipo_atual = combo_tipo_taxa.get().strip() or "Porcentagem (%)"
+    except Exception:
+        tipo_atual = "Porcentagem (%)"
+    if tipo_atual not in ("Porcentagem (%)", "Valor (R$)"):
+        tipo_atual = "Porcentagem (%)"
+
     venc_base_br = entry_venda_venc.get().strip() or hoje_br()
-    venc_base_iso = br_para_iso(venc_base_br) or hoje_iso()
-    
-    # Criar modal
+    if not br_para_iso(venc_base_br):
+        venc_base_br = hoje_br()
+
+    # ---------------- Janela ----------------
     modal = tk.Toplevel(root)
-    modal.title("💳 Configurar Parcelas - Cartão de Crédito até 12x")
-    modal.geometry("650x580")
+    modal.title("Configurar Parcelas - Cartão de Crédito (até 12x)")
     modal.configure(bg="white")
     modal.transient(root)
     modal.grab_set()
-    modal.resizable(False, False)
-    
-    modal.update_idletasks()
-    try:
-        x = root.winfo_x() + (root.winfo_width()//2) - 325
-        y = root.winfo_y() + (root.winfo_height()//2) - 290
-        modal.geometry(f"650x580+{x}+{y}")
-    except:
-        pass
-    
-    # Header
-    header = tk.Frame(modal, bg="#f59e0b", height=80)
-    header.pack(fill='x')
-    header.pack_propagate(False)
-    tk.Label(header, text="💳 CARTÃO DE CRÉDITO - Parcelamento em até 12x", bg="#f59e0b", fg="white", font=('Arial', 13, 'bold')).pack(pady=8)
-    lbl_total_header = tk.Label(header, text=f"Total da venda: {formatar_moeda(total_final)}", bg="#f59e0b", fg="white", font=('Arial', 11, 'bold'))
-    lbl_total_header.pack()
-    
-    # Body
-    body = tk.Frame(modal, bg="white")
-    body.pack(fill='both', expand=True, padx=20, pady=15)
-    
-    # Configuração
-    frame_config = tk.LabelFrame(body, text="⚙️ Configuração das Parcelas", font=('Arial', 10, 'bold'), bg="white", padx=15, pady=12)
-    frame_config.pack(fill='x', pady=5)
-    
-    tk.Label(frame_config, text="Qtd Parcelas (1-12)*:", bg="white", font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).grid(row=0, column=0, sticky='w', padx=5, pady=5)
-    combo_modal_parcelas = ttk.Combobox(frame_config, width=8, values=[str(i) for i in range(1,13)], font=('Arial', 11, 'bold'))
-    combo_modal_parcelas.grid(row=0, column=1, padx=5, pady=5)
-    combo_modal_parcelas.set(str(parcelas_atual))
-    
-    tk.Label(frame_config, text="Tipo da taxa*:", bg="white", font=('Arial', 9, 'bold')).grid(row=0, column=2, sticky='w', padx=15, pady=5)
-    combo_modal_tipo = ttk.Combobox(frame_config, width=16, values=["Porcentagem (%)", "Valor (R$)"], state="readonly", font=('Arial', 10))
-    combo_modal_tipo.grid(row=0, column=3, padx=5, pady=5)
-    try:
-        tipo_atual = combo_tipo_taxa.get().strip()
-    except Exception:
-        tipo_atual = "Porcentagem (%)"
-    combo_modal_tipo.set(tipo_atual if tipo_atual else "Porcentagem (%)")
+    modal.resizable(True, True)
+    modal.minsize(620, 500)
 
-    lbl_modal_taxa = tk.Label(frame_config, text="Taxa %:", bg="white", font=('Arial', 9, 'bold'))
-    lbl_modal_taxa.grid(row=1, column=2, sticky='w', padx=15, pady=5)
+    largura, altura = 720, 640
+    try:
+        modal.update_idletasks()
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        largura = min(largura, max(620, sw - 40))
+        altura = min(altura, max(500, sh - 80))
+        x = root.winfo_x() + (root.winfo_width() // 2) - (largura // 2)
+        y = root.winfo_y() + (root.winfo_height() // 2) - (altura // 2)
+        x = max(0, min(x, sw - largura))
+        y = max(0, min(y, sh - altura))
+        modal.geometry(f"{largura}x{altura}+{x}+{y}")
+    except Exception:
+        modal.geometry(f"{largura}x{altura}")
+
+    def fechar_modal():
+        try:
+            modal.grab_release()
+        except Exception:
+            pass
+        try:
+            modal.destroy()
+        except Exception:
+            pass
+
+    # ---------------- Cabeçalho ----------------
+    header = tk.Frame(modal, bg="#f59e0b", height=70)
+    header.pack(fill='x', side='top')
+    header.pack_propagate(False)
+    tk.Label(header, text="CARTÃO DE CRÉDITO - Parcelamento em até 12x", bg="#f59e0b", fg="white", font=('Arial', 13, 'bold')).pack(pady=(10, 0))
+    tk.Label(header, text=f"Total da venda: {formatar_moeda(total_final)}", bg="#f59e0b", fg="white", font=('Arial', 11, 'bold')).pack()
+
+    # ---------------- Rodapé (botões) ----------------
+    # Empacotado ANTES do corpo e ancorado embaixo: assim os botões nunca são
+    # "empurrados" para fora da janela, mesmo em telas pequenas.
+    footer = tk.Frame(modal, bg="#f8fafc", highlightthickness=1, highlightbackground=CORES["border"])
+    footer.pack(fill='x', side='bottom')
+
+    # ---------------- Corpo ----------------
+    body = tk.Frame(modal, bg="white")
+    body.pack(fill='both', expand=True, side='top', padx=20, pady=(12, 6))
+
+    # Configuração
+    frame_config = tk.LabelFrame(body, text="Configuração das Parcelas", font=('Arial', 10, 'bold'), bg="white", padx=15, pady=10)
+    frame_config.pack(fill='x', pady=(0, 6))
+
+    lbl_cfg = dict(bg="white", font=('Arial', 9, 'bold'), fg=CORES["text_dark"])
+
+    tk.Label(frame_config, text="Qtd. parcelas (1-12)*:", **lbl_cfg).grid(row=0, column=0, sticky='w', padx=(0, 6), pady=5)
+    combo_modal_parcelas = ttk.Combobox(frame_config, width=6, values=[str(i) for i in range(1, 13)], font=('Arial', 11, 'bold'))
+    combo_modal_parcelas.grid(row=0, column=1, sticky='w', padx=(0, 20), pady=5)
+    combo_modal_parcelas.set(str(parcelas_atual))
+
+    tk.Label(frame_config, text="1ª parcela vence em*:", **lbl_cfg).grid(row=0, column=2, sticky='w', padx=(0, 6), pady=5)
+    entry_modal_venc = tk.Entry(frame_config, width=14, font=('Arial', 10))
+    entry_modal_venc.grid(row=0, column=3, sticky='w', pady=5)
+    entry_modal_venc.insert(0, venc_base_br)
+    ativar_seletor_data(entry_modal_venc)
+    tk.Label(frame_config, text="(dd/mm/aaaa)", bg="white", fg=CORES["text_gray"], font=('Arial', 8)).grid(row=0, column=4, sticky='w', padx=(6, 0))
+
+    tk.Label(frame_config, text="Tipo da taxa*:", **lbl_cfg).grid(row=1, column=0, sticky='w', padx=(0, 6), pady=5)
+    combo_modal_tipo = ttk.Combobox(frame_config, width=16, values=["Porcentagem (%)", "Valor (R$)"], state="readonly", font=('Arial', 10))
+    combo_modal_tipo.grid(row=1, column=1, sticky='w', padx=(0, 20), pady=5)
+    combo_modal_tipo.set(tipo_atual)
+
+    lbl_modal_taxa = tk.Label(frame_config, text="Taxa %:", **lbl_cfg)
+    lbl_modal_taxa.grid(row=1, column=2, sticky='w', padx=(0, 6), pady=5)
     entry_modal_taxa = tk.Entry(frame_config, width=10, font=('Arial', 11, 'bold'))
-    entry_modal_taxa.grid(row=1, column=3, padx=5, pady=5)
-    entry_modal_taxa.insert(0, str(taxa_atual))
+    entry_modal_taxa.grid(row=1, column=3, sticky='w', pady=5)
+    entry_modal_taxa.insert(0, _fmt_num(taxa_atual))
 
     def _sync_lbl_modal_tipo(event=None):
         if combo_modal_tipo.get().startswith("Valor"):
@@ -2847,60 +3054,52 @@ def abrir_modal_parcelas_cartao():
         else:
             lbl_modal_taxa.config(text="Taxa %:")
 
-    combo_modal_tipo.bind("<<ComboboxSelected>>", _sync_lbl_modal_tipo)
     _sync_lbl_modal_tipo()
-    
-    tk.Label(frame_config, text="1ª Parcela vencimento* dd/mm/aaaa:", bg="white", font=('Arial', 9, 'bold'), fg=CORES["text_dark"]).grid(row=1, column=0, columnspan=2, sticky='w', padx=5, pady=5)
-    entry_modal_venc = tk.Entry(frame_config, width=15, font=('Arial', 10))
-    entry_modal_venc.grid(row=1, column=2, padx=5, pady=5, sticky='w')
-    entry_modal_venc.insert(0, venc_base_br)
-    ativar_seletor_data(entry_modal_venc)
-    
+
     # Resumo
     frame_resumo = tk.Frame(body, bg="#fef3c7", bd=1, relief='solid')
-    frame_resumo.pack(fill='x', pady=10, ipadx=10, ipady=10)
-    lbl_resumo_total = tk.Label(frame_resumo, text="Total com taxa: R$ 0,00", bg="#fef3c7", font=('Arial', 11, 'bold'), fg="#92400e")
-    lbl_resumo_total.pack(anchor='w')
-    lbl_resumo_parcela = tk.Label(frame_resumo, text="Valor por parcela: R$ 0,00", bg="#fef3c7", font=('Arial', 11, 'bold'), fg=CORES["primary"])
-    lbl_resumo_parcela.pack(anchor='w', pady=2)
-    lbl_resumo_info = tk.Label(frame_resumo, text="As parcelas serão lançadas em Contas a Receber com datas +30 dias cada", bg="#fef3c7", font=('Arial', 8, 'italic'), fg="#78350f")
-    lbl_resumo_info.pack(anchor='w', pady=(5,0))
-    
-    # Tree preview parcelas
-    frame_tree = tk.LabelFrame(body, text="📅 Preview das Parcelas - Datas de Vencimento", font=('Arial', 10, 'bold'), bg="white")
-    frame_tree.pack(fill='both', expand=True, pady=5)
-    
+    frame_resumo.pack(fill='x', pady=6)
+    inner_resumo = tk.Frame(frame_resumo, bg="#fef3c7")
+    inner_resumo.pack(fill='x', padx=10, pady=8)
+    lbl_resumo_total = tk.Label(inner_resumo, text="", bg="#fef3c7", font=('Arial', 10, 'bold'), fg="#92400e", anchor='w', justify='left')
+    lbl_resumo_total.pack(anchor='w', fill='x')
+    lbl_resumo_parcela = tk.Label(inner_resumo, text="", bg="#fef3c7", font=('Arial', 12, 'bold'), fg=CORES["primary"], anchor='w')
+    lbl_resumo_parcela.pack(anchor='w', pady=(2, 0))
+    tk.Label(inner_resumo, text="As parcelas serão lançadas em Contas a Receber com vencimentos a cada +30 dias.",
+             bg="#fef3c7", font=('Arial', 8, 'italic'), fg="#78350f", anchor='w').pack(anchor='w', pady=(4, 0))
+
+    # Preview das parcelas
+    frame_tree = tk.LabelFrame(body, text="Preview das Parcelas - Datas de Vencimento", font=('Arial', 10, 'bold'), bg="white")
+    frame_tree.pack(fill='both', expand=True, pady=(6, 0))
+
     cols_preview = ("Parcela", "Vencimento", "Valor", "Status")
-    tree_preview = ttk.Treeview(frame_tree, columns=cols_preview, show='headings', height=10)
+    tree_preview = ttk.Treeview(frame_tree, columns=cols_preview, show='headings', height=6)
     for c in cols_preview:
         tree_preview.heading(c, text=c)
     tree_preview.column("Parcela", width=80, anchor='center')
     tree_preview.column("Vencimento", width=120, anchor='center')
-    tree_preview.column("Valor", width=130, anchor='center')
+    tree_preview.column("Valor", width=140, anchor='center')
     tree_preview.column("Status", width=100, anchor='center')
     tree_preview.pack(fill='both', expand=True, side='left', padx=5, pady=5)
     sb_preview = ttk.Scrollbar(frame_tree, orient='vertical', command=tree_preview.yview)
     tree_preview.configure(yscrollcommand=sb_preview.set)
     sb_preview.pack(side='right', fill='y')
-    
+
     def calcular_preview():
         try:
             limpar_tree(tree_preview)
             try:
                 parc = int(combo_modal_parcelas.get() or 1)
-                if parc <1: parc=1
-                if parc>12: parc=12
-            except:
+            except Exception:
                 parc = 1
+            parc = min(12, max(1, parc))
             try:
                 taxa = float(str(entry_modal_taxa.get()).replace(",", ".") or 0)
             except Exception:
                 taxa = 0
-            tipo_m = "Porcentagem (%)"
-            try:
-                tipo_m = combo_modal_tipo.get().strip() or tipo_m
-            except Exception:
-                pass
+            if taxa < 0:
+                taxa = 0
+            tipo_m = combo_modal_tipo.get().strip() or "Porcentagem (%)"
 
             venc_br_modal = entry_modal_venc.get().strip() or hoje_br()
             venc_iso_modal = br_para_iso(venc_br_modal) or hoje_iso()
@@ -2913,94 +3112,114 @@ def abrir_modal_parcelas_cartao():
             valor_parcela = total_com_taxa / parc if parc > 0 else total_com_taxa
 
             if tipo_m.startswith("Valor"):
-                info_taxa = f"Taxa valor: +{formatar_moeda(valor_taxa)}"
+                info_taxa = f"Taxa (valor): + {formatar_moeda(valor_taxa)}"
             else:
-                info_taxa = f"Taxa {taxa:g}%: +{formatar_moeda(valor_taxa)}"
-            lbl_resumo_total.config(text=f"Original: {formatar_moeda(total_final)}  |  {info_taxa}  |  Total: {formatar_moeda(total_com_taxa)}")
+                info_taxa = f"Taxa {taxa:g}%: + {formatar_moeda(valor_taxa)}"
+            lbl_resumo_total.config(text=f"Venda: {formatar_moeda(total_final)}   |   {info_taxa}   |   Total com taxa: {formatar_moeda(total_com_taxa)}")
             lbl_resumo_parcela.config(text=f"{parc}x de {formatar_moeda(valor_parcela)}")
-            
-            for i in range(1, parc+1):
-                venc_parcela = base_date + timedelta(days=30*(i-1))
-                venc_parcela_br = venc_parcela.strftime("%d/%m/%Y")
-                tree_preview.insert("", "end", values=(f"{i}/{parc}", venc_parcela_br, formatar_moeda(valor_parcela), "Em Aberto"))
-            
+
+            for i in range(1, parc + 1):
+                venc_parcela = base_date + timedelta(days=30 * (i - 1))
+                tree_preview.insert("", "end", values=(f"{i}/{parc}", venc_parcela.strftime("%d/%m/%Y"), formatar_moeda(valor_parcela), "Em Aberto"))
+
             return parc, taxa, venc_br_modal, total_com_taxa, valor_parcela
         except Exception as e:
             print("Erro preview", e)
             return 1, 0, hoje_br(), total_final, total_final
-    
+
     def on_change_preview(event=None):
         calcular_preview()
-    
+
     combo_modal_parcelas.bind("<<ComboboxSelected>>", on_change_preview)
     combo_modal_parcelas.bind("<KeyRelease>", on_change_preview)
     entry_modal_taxa.bind("<KeyRelease>", on_change_preview)
     entry_modal_venc.bind("<KeyRelease>", on_change_preview)
     entry_modal_venc.bind("<FocusOut>", on_change_preview)
-    try:
-        combo_modal_tipo.bind("<<ComboboxSelected>>", lambda e: (_sync_lbl_modal_tipo(), on_change_preview()))
-    except Exception:
-        pass
-    
-    # Inicializa preview
+    combo_modal_tipo.bind("<<ComboboxSelected>>", lambda e: (_sync_lbl_modal_tipo(), on_change_preview()))
+
     calcular_preview()
-    
-    # Botões
-    frame_btn = tk.Frame(body, bg="white")
-    frame_btn.pack(fill='x', pady=15)
-    
-    def confirmar():
+
+    # ---------------- Ações ----------------
+    def _aplicar_no_pdv():
+        """Valida e copia a configuração do modal para os campos do PDV.
+        Retorna (parc, taxa, venc_br, total_com_taxa, valor_parcela) ou None se inválido."""
+        parc, taxa, venc_br_modal, total_com_taxa, valor_parcela = calcular_preview()
+        if not br_para_iso(venc_br_modal):
+            mostrar_aviso("Data de vencimento inválida! Use dd/mm/aaaa", "Data Inválida")
+            try:
+                modal.grab_set()
+            except Exception:
+                pass
+            return None
+        tipo_m = combo_modal_tipo.get().strip() or "Porcentagem (%)"
+
+        combo_parcelas.set(str(parc))
+        entry_taxa.delete(0, tk.END)
+        entry_taxa.insert(0, _fmt_num(taxa))
         try:
-            parc, taxa, venc_br_modal, total_com_taxa, valor_parcela = calcular_preview()
-            # Validar vencimento
-            venc_iso = br_para_iso(venc_br_modal)
-            if not venc_iso:
-                mostrar_aviso("Data de vencimento inválida! Use dd/mm/aaaa", "Data Inválida")
-                return
-            
-            # Atualizar campos principais do PDV
-            combo_parcelas.set(str(parc))
-            entry_taxa.delete(0, tk.END)
-            entry_taxa.insert(0, str(taxa))
-            try:
-                combo_tipo_taxa.set(combo_modal_tipo.get().strip() or "Porcentagem (%)")
-                if combo_tipo_taxa.get().startswith("Valor"):
-                    # atualiza label do campo principal
-                    pass
-            except Exception:
-                pass
-            entry_venda_venc.delete(0, tk.END)
-            entry_venda_venc.insert(0, venc_br_modal)
-            try:
-                # força label do tipo no frame principal
-                if combo_tipo_taxa.get().startswith("Valor"):
-                    lbl_taxa_campo.config(text="Taxa R$:")
-                else:
-                    lbl_taxa_campo.config(text="Taxa %:")
-            except Exception:
-                pass
+            combo_tipo_taxa.set(tipo_m)
+        except Exception:
+            pass
+        try:
+            lbl_taxa_campo.config(text="Taxa R$:" if tipo_m.startswith("Valor") else "Taxa %:")
+        except Exception:
+            pass
+        entry_venda_venc.delete(0, tk.END)
+        entry_venda_venc.insert(0, venc_br_modal)
+        # Recalcula carrinho + totais do cartão no PDV
+        try:
+            atualizar_carrinho_tree()
+        except Exception:
             atualizar_calculo_cartao()
-            
-            try:
-                modal.grab_release()
-            except:
-                pass
-            modal.destroy()
-            mostrar_sucesso(f"Parcelas configuradas!\n\n{parc}x de {formatar_moeda(valor_parcela)}\nTotal com taxa: {formatar_moeda(total_com_taxa)}\n1ª parcela: {venc_br_modal}\n\nSerão lançadas em Contas a Receber ao finalizar a venda.", "Parcelas Configuradas")
+        return parc, taxa, venc_br_modal, total_com_taxa, valor_parcela
+
+    def confirmar():
+        """Aplica as parcelas no PDV e volta para a tela de venda."""
+        try:
+            res = _aplicar_no_pdv()
+            if res is None:
+                return
+            parc, taxa, venc_br_modal, total_com_taxa, valor_parcela = res
+            fechar_modal()
+            mostrar_sucesso(
+                f"Parcelas configuradas!\n\n{parc}x de {formatar_moeda(valor_parcela)}\n"
+                f"Total com taxa: {formatar_moeda(total_com_taxa)}\n1ª parcela: {venc_br_modal}\n\n"
+                "Clique em FINALIZAR VENDA para concluir.",
+                "Parcelas Configuradas",
+            )
         except Exception as e:
             mostrar_erro(f"Erro ao confirmar: {e}")
-    
-    def cancelar():
+
+    def confirmar_e_finalizar():
+        """Aplica as parcelas no PDV e já finaliza a venda."""
         try:
-            modal.grab_release()
-        except:
-            pass
-        modal.destroy()
-    
-    tk.Button(frame_btn, text="❌ Cancelar", command=cancelar, bg="#64748b", fg="white", font=('Arial', 10, 'bold'), bd=0, padx=20, pady=8, cursor='hand2').pack(side='left', padx=5)
-    tk.Button(frame_btn, text="✅ Confirmar Parcelas", command=confirmar, bg=CORES["success"], fg="white", font=('Arial', 11, 'bold'), bd=0, padx=25, pady=8, cursor='hand2').pack(side='right', padx=5)
-    
-    modal.bind('<Escape>', lambda e: cancelar())
+            res = _aplicar_no_pdv()
+            if res is None:
+                return
+            fechar_modal()
+            finalizar_venda()
+        except Exception as e:
+            mostrar_erro(f"Erro ao finalizar: {e}")
+
+    frame_btn = tk.Frame(footer, bg="#f8fafc")
+    frame_btn.pack(fill='x', padx=20, pady=(10, 4))
+    tk.Button(frame_btn, text="Cancelar", command=fechar_modal, bg="#64748b", fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=18, pady=8, cursor='hand2').pack(side='left')
+    tk.Button(frame_btn, text="FINALIZAR VENDA", command=confirmar_e_finalizar, bg=CORES["success"], fg="white",
+              font=('Arial', 11, 'bold'), bd=0, padx=22, pady=8, cursor='hand2').pack(side='right')
+    tk.Button(frame_btn, text="Confirmar Parcelas", command=confirmar, bg=CORES["primary"], fg="white",
+              font=('Arial', 10, 'bold'), bd=0, padx=18, pady=8, cursor='hand2').pack(side='right', padx=(0, 8))
+    tk.Label(footer,
+             text="Confirmar Parcelas = aplica no PDV e volta à venda   •   FINALIZAR VENDA = aplica e conclui a venda agora",
+             bg="#f8fafc", fg=CORES["text_gray"], font=('Arial', 8), wraplength=580, justify='left').pack(anchor='w', padx=20, pady=(0, 8))
+
+    modal.bind('<Escape>', lambda e: fechar_modal())
+    modal.bind('<Return>', lambda e: confirmar())
+    modal.protocol("WM_DELETE_WINDOW", fechar_modal)
+    try:
+        combo_modal_parcelas.focus_set()
+    except Exception:
+        pass
     modal.wait_window()
 
 def on_forma_pagamento_change(event=None):
@@ -5418,7 +5637,7 @@ def criar_interface():
     global tree_lixeira_clientes, tree_lixeira_fornecedores, tree_lixeira_produtos, tree_lixeira_vendas, tree_lixeira_caixa, tree_lixeira_cp, tree_lixeira_cr
     global tree_usuarios, entry_usu_id, entry_usu_nome, entry_usu_login, entry_usu_senha, entry_usu_email, combo_usu_perfil
     global telas, open_tabs
-    global frame_cartao_credito, combo_parcelas, entry_taxa, combo_tipo_taxa, lbl_cartao_total_base, lbl_cartao_total_com_taxa, lbl_cartao_parcela, lbl_cartao_taxa_info, frame_venda_add, frame_venda_botoes, frame_venda_carrinho
+    global frame_cartao_credito, combo_parcelas, entry_taxa, combo_tipo_taxa, lbl_taxa_campo, lbl_cartao_total_base, lbl_cartao_total_com_taxa, lbl_cartao_parcela, lbl_cartao_taxa_info, frame_venda_add, frame_venda_botoes, frame_venda_carrinho
     
     root = tk.Tk()
     root.title(f"Chaveiro Mestre - {usuario_logado['nome']} ({usuario_logado['perfil'].upper()})")
@@ -6052,7 +6271,7 @@ def criar_interface():
     # Frame Cartão Crédito - criado aqui, antes de ser usado - COM MODAL
     frame_cartao_credito = tk.LabelFrame(
         tela_vendas,
-        text="💳 Cartão de Crédito — Parcelas + Taxa (% ou R$)",
+        text="Cartão de Crédito — Parcelas + Taxa (% ou R$)",
         font=('Arial', 11, 'bold'),
         bg="#fef3c7",
         padx=15,
@@ -6091,7 +6310,7 @@ def criar_interface():
 
     tk.Button(
         frame_cartao_credito,
-        text="📋 Detalhar parcelas",
+        text="Detalhar parcelas / Finalizar",
         command=abrir_modal_parcelas_cartao,
         bg=CORES["primary"],
         fg="white",
@@ -6120,7 +6339,7 @@ def criar_interface():
 
     tk.Label(
         frame_cartao_credito,
-        text="✅ Com Cartão de Crédito, as parcelas são lançadas em Contas a Receber (vencimento a cada +30 dias).",
+        text="Com Cartão de Crédito, as parcelas são lançadas em Contas a Receber (vencimento a cada +30 dias).",
         bg="#fef3c7",
         fg="#92400e",
         font=('Arial', 8, 'italic'),
@@ -6490,6 +6709,8 @@ Sistema v3.1 Corrigido
         bg=CORES["bg_light"],
         fg=CORES["text_dark"],
     ).pack(side='left')
+    lbl_bk_status = tk.Label(frame_bk_top, text="", font=('Arial', 9), bg=CORES["bg_light"], fg=CORES["text_gray"])
+    lbl_bk_status.pack(side='right')
 
     frame_bk_info = tk.LabelFrame(
         tela_backup,
@@ -6503,9 +6724,10 @@ Sistema v3.1 Corrigido
     tk.Label(
         frame_bk_info,
         text=(
-            "• Ao sair do sistema (Logout ou fechar a janela), um backup automático é salvo na pasta backups/\n"
-            "• Você também pode gerar backup manual ou exportar para outro local\n"
-            "• Para restaurar, selecione um arquivo da lista ou escolha um .db baixado no computador"
+            "• Gerar backup agora: salva uma cópia do banco na pasta backups/  •  Exportar: salva a cópia onde você escolher\n"
+            "• Restaurar / Importar: substitui os dados atuais pelos do backup e ATUALIZA todas as telas automaticamente\n"
+            "• Antes de qualquer restauração é gerada uma cópia de segurança (antes_restore_...) dos dados atuais\n"
+            "• Atualizar dados: recarrega todas as listas, combos e o dashboard a partir do banco de dados"
         ),
         bg=CORES["bg_white"],
         fg=CORES["text_dark"],
@@ -6513,26 +6735,43 @@ Sistema v3.1 Corrigido
         font=('Arial', 9),
     ).pack(anchor='w')
 
-    frame_bk_acoes = tk.Frame(tela_backup, bg=CORES["bg_light"])
-    frame_bk_acoes.pack(fill='x', padx=20, pady=8)
+    def _set_status_bk(texto):
+        try:
+            lbl_bk_status.config(text=texto)
+        except Exception:
+            pass
 
     def _backup_manual():
         caminho = fazer_backup(silencioso=False)
         atualizar_lista_backups()
+        if caminho:
+            _set_status_bk(f"Último backup: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
         return caminho
 
     def _exportar_backup():
         garantir_pasta_backup()
         destino = filedialog.asksaveasfilename(
+            parent=root,
             title="Salvar backup como...",
             defaultextension=".db",
             filetypes=[("Banco SQLite", "*.db"), ("Todos", "*.*")],
             initialfile=gerar_nome_backup(),
+            initialdir=BACKUP_DIR,
         )
         if not destino:
             return
         if fazer_backup(destino=destino, silencioso=False):
             atualizar_lista_backups()
+            _set_status_bk(f"Último backup: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+
+    def _pos_restauracao(caminho):
+        atualizar_lista_backups()
+        _set_status_bk(f"Restaurado de {os.path.basename(caminho)} em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        # Mostra o dashboard já com os dados restaurados
+        try:
+            abrir_aba("dashboard", "Dashboard", "📊")
+        except Exception:
+            pass
 
     def _restaurar_selecionado():
         sel = tree_backups.selection()
@@ -6541,17 +6780,28 @@ Sistema v3.1 Corrigido
             return
         caminho = tree_backups.item(sel[0])["values"][3]
         if restaurar_backup(caminho):
-            atualizar_lista_backups()
+            _pos_restauracao(caminho)
 
     def _restaurar_arquivo():
+        garantir_pasta_backup()
         caminho = filedialog.askopenfilename(
-            title="Selecionar arquivo de backup (.db)",
+            parent=root,
+            title="Importar / restaurar backup (.db)",
             filetypes=[("Banco SQLite", "*.db"), ("Todos", "*.*")],
         )
         if not caminho:
             return
         if restaurar_backup(caminho):
-            atualizar_lista_backups()
+            _pos_restauracao(caminho)
+
+    def _atualizar_dados_manual():
+        ok = recarregar_dados_sistema(limpar_formularios=False)
+        atualizar_lista_backups()
+        if ok:
+            _set_status_bk(f"Dados atualizados em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+            mostrar_sucesso("Todas as telas foram atualizadas com os dados do banco.", "Dados atualizados")
+        else:
+            mostrar_aviso("Algumas telas não puderam ser atualizadas.\nFaça logout e login para recarregar tudo.", "Atualização parcial")
 
     def _abrir_pasta_backups():
         garantir_pasta_backup()
@@ -6566,10 +6816,16 @@ Sistema v3.1 Corrigido
         except Exception:
             mostrar_info(f"Pasta de backups:\n{pasta}", "Backups")
 
+    frame_bk_acoes = tk.Frame(tela_backup, bg=CORES["bg_light"])
+    frame_bk_acoes.pack(fill='x', padx=20, pady=8)
     tk.Button(frame_bk_acoes, text="Gerar backup agora", command=_backup_manual,
               bg=CORES["success"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=(0, 8))
     tk.Button(frame_bk_acoes, text="Exportar backup...", command=_exportar_backup,
               bg=CORES["primary"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=4)
+    tk.Button(frame_bk_acoes, text="Importar / Restaurar de arquivo...", command=_restaurar_arquivo,
+              bg=CORES["warning"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='left', padx=4)
+    tk.Button(frame_bk_acoes, text="Atualizar dados", command=_atualizar_dados_manual,
+              bg=CORES["purple"], fg="white", font=('Arial', 10, 'bold'), bd=0, padx=14, pady=8, cursor='hand2').pack(side='right')
 
     frame_bk_tree = tk.LabelFrame(
         tela_backup,
@@ -6604,6 +6860,11 @@ Sistema v3.1 Corrigido
                 tam_txt = f"{tamanho / 1024:.1f} KB"
             tree_backups.insert("", "end", values=(nome, mtime, tam_txt, caminho))
 
+    # Permite que restaurar_backup()/recarregar_dados_sistema() atualizem esta lista
+    globals()["_hook_atualizar_lista_backups"] = atualizar_lista_backups
+
+    tree_backups.bind("<Double-1>", lambda e: _restaurar_selecionado())
+
     frame_bk_bottom = tk.Frame(tela_backup, bg=CORES["bg_light"])
     frame_bk_bottom.pack(fill='x', padx=20, pady=(0, 12))
     tk.Button(
@@ -6618,6 +6879,31 @@ Sistema v3.1 Corrigido
         pady=8,
         cursor='hand2',
     ).pack(side='left')
+    tk.Button(
+        frame_bk_bottom,
+        text="Atualizar lista",
+        command=atualizar_lista_backups,
+        bg="#64748b",
+        fg="white",
+        font=('Arial', 10, 'bold'),
+        bd=0,
+        padx=14,
+        pady=8,
+        cursor='hand2',
+    ).pack(side='left', padx=8)
+    tk.Button(
+        frame_bk_bottom,
+        text="Abrir pasta de backups",
+        command=_abrir_pasta_backups,
+        bg="white",
+        fg=CORES["text_dark"],
+        font=('Arial', 10),
+        bd=1,
+        relief='solid',
+        padx=14,
+        pady=7,
+        cursor='hand2',
+    ).pack(side='right')
     atualizar_lista_backups()
 
 
